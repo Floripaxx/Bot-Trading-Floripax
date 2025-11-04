@@ -9,17 +9,17 @@ import os
 
 # Configuración de la página
 st.set_page_config(
-    page_title="Bot Trading MEXC - LÓGICA CORREGIDA",
+    page_title="Bot Trading MEXC - SIN INTERRUPCIONES",
     page_icon="🤖",
     layout="wide"
 )
 
 # Título principal
-st.title("🤖 Bot de Trading MEXC - LÓGICA DE VENTAS CORREGIDA")
+st.title("🤖 Bot de Trading MEXC - EJECUCIÓN CONTINUA")
 st.markdown("---")
 
-# Clase del bot con LÓGICA CORREGIDA
-class TradingBotCorregido:
+# Clase del bot MEJORADA - ejecución continua
+class TradingBotContinuo:
     def __init__(self):
         self.capital = 250.0
         self.capital_actual = 250.0
@@ -33,6 +33,7 @@ class TradingBotCorregido:
         self.pair_index = 0
         self.ultima_analisis = None
         self.ultima_actualizacion = None
+        self.auto_trading = False
         
         # Cargar estado PERSISTENTE
         self._cargar_estado_persistente()
@@ -40,7 +41,6 @@ class TradingBotCorregido:
     def _guardar_estado_persistente(self):
         """GUARDADO DEFINITIVO - Supervive a recargas"""
         try:
-            # PERSISTENCIA LOCAL (Archivo temporal en Streamlit Cloud)
             estado = {
                 'capital_actual': self.capital_actual,
                 'senales_compra': self.senales_compra,
@@ -49,14 +49,15 @@ class TradingBotCorregido:
                 'operaciones_abiertas': self.operaciones_abiertas,
                 'historial': self.historial,
                 'pair_index': self.pair_index,
-                'ultima_actualizacion': self.ultima_actualizacion.isoformat() if self.ultima_actualizacion else None
+                'ultima_actualizacion': self.ultima_actualizacion.isoformat() if self.ultima_actualizacion else None,
+                'auto_trading': self.auto_trading
             }
             
-            # Guardar en archivo temporal (persiste entre recargas)
+            # Guardar en archivo temporal
             with open('/tmp/trading_bot_state.json', 'w') as f:
                 json.dump(estado, f, indent=2)
             
-            # PERSISTENCIA EN SESSION_STATE (backup inmediato)
+            # Backup en session_state
             if 'bot_persistent_state' not in st.session_state:
                 st.session_state.bot_persistent_state = {}
             st.session_state.bot_persistent_state = estado
@@ -69,16 +70,13 @@ class TradingBotCorregido:
         estado_cargado = None
         
         try:
-            # 1️⃣ INTENTAR cargar desde archivo temporal
             if os.path.exists('/tmp/trading_bot_state.json'):
                 with open('/tmp/trading_bot_state.json', 'r') as f:
                     estado_cargado = json.load(f)
             
-            # 2️⃣ INTENTAR cargar desde session_state (fallback)
             elif 'bot_persistent_state' in st.session_state and st.session_state.bot_persistent_state:
                 estado_cargado = st.session_state.bot_persistent_state
             
-            # 3️⃣ Si hay estado cargado, aplicarlo
             if estado_cargado:
                 self.capital_actual = estado_cargado.get('capital_actual', 250.0)
                 self.senales_compra = estado_cargado.get('senales_compra', 0)
@@ -87,13 +85,13 @@ class TradingBotCorregido:
                 self.operaciones_abiertas = estado_cargado.get('operaciones_abiertas', [])
                 self.historial = estado_cargado.get('historial', [])
                 self.pair_index = estado_cargado.get('pair_index', 0)
+                self.auto_trading = estado_cargado.get('auto_trading', False)
                 
                 ultima_act = estado_cargado.get('ultima_actualizacion')
                 if ultima_act:
                     self.ultima_actualizacion = datetime.fromisoformat(ultima_act)
                 
         except Exception as e:
-            # Estado por defecto
             self.capital_actual = 250.0
     
     def obtener_precio_real(self, simbolo):
@@ -107,7 +105,6 @@ class TradingBotCorregido:
                 precio_real = float(data['price'])
                 return precio_real
             else:
-                # Fallback a precios realistas actualizados
                 precios_fallback = {
                     "BTCUSDT": 100900.0,
                     "ETHUSDT": 2800.0,
@@ -117,7 +114,6 @@ class TradingBotCorregido:
                 }
                 return precios_fallback.get(simbolo, 100.0)
         except Exception as e:
-            # Fallback garantizado
             precios_fallback = {
                 "BTCUSDT": 100900.0,
                 "ETHUSDT": 2800.0,
@@ -140,15 +136,12 @@ class TradingBotCorregido:
         """Análisis de mercado con precios REALES"""
         par_actual = self.pares[self.pair_index]
         
-        # Obtener precio REAL de MEXC
         precio_real = self.obtener_precio_real(par_actual)
         
-        # Simular RSI y volumen (pero con precio REAL)
         import random
         rsi = round(random.uniform(25, 75), 1)
         volumen = round(random.uniform(0.8, 1.8), 2)
         
-        # Lógica de señales MEJORADA
         senal = None
         if rsi < 32 and volumen > 1.3:
             senal = "COMPRA"
@@ -174,21 +167,17 @@ class TradingBotCorregido:
         return [resultado]
     
     def _ejecutar_ordenes_automaticas(self, resultados):
-        """✅✅✅ LÓGICA CORREGIDA - VENTAS CON STOP LOSS/TAKE PROFIT CORRECTOS"""
+        """✅ LÓGICA CORREGIDA - VENTAS CON STOP LOSS/TAKE PROFIT CORRECTOS"""
         for resultado in resultados:
             if resultado['senal'] and self.capital_actual > 25:
                 
-                # ✅ LÓGICA CORREGIDA PARA COMPRA/VENTA
                 if resultado['senal'] == "COMPRA":
-                    # COMPRA: Gana si SUBE, Pierde si BAJA
-                    stop_loss = resultado['precio_actual'] * 0.97   # -3% (protección)
-                    take_profit = resultado['precio_actual'] * 1.06  # +6% (ganancia)
-                else:  # VENTA
-                    # ✅✅✅ CORRECCIÓN CRÍTICA: VENTA Gana si BAJA, Pierde si SUBE
-                    stop_loss = resultado['precio_actual'] * 1.03   # +3% (protección contra subidas)
-                    take_profit = resultado['precio_actual'] * 0.94  # -6% (ganancia con bajadas)
+                    stop_loss = resultado['precio_actual'] * 0.97
+                    take_profit = resultado['precio_actual'] * 1.06
+                else:
+                    stop_loss = resultado['precio_actual'] * 1.03
+                    take_profit = resultado['precio_actual'] * 0.94
                 
-                # EJECUCIÓN AUTOMÁTICA con lógica corregida
                 orden_id = len(self.historial) + 1
                 orden = {
                     'id': orden_id,
@@ -208,7 +197,6 @@ class TradingBotCorregido:
                 self.ordenes_activas += 1
                 self.capital_actual -= orden['cantidad']
                 
-                # Rotar al siguiente par después de operar
                 self.pair_index = (self.pair_index + 1) % len(self.pares)
     
     def _gestionar_operaciones_abiertas(self):
@@ -219,18 +207,15 @@ class TradingBotCorregido:
             simbolo = operacion['par'].replace("/", "")
             precio_actual_real = self.obtener_precio_real(simbolo)
             
-            # ✅ LÓGICA CORREGIDA PARA COMPRA/VENTA
             if operacion['tipo'] == "COMPRA":
-                # COMPRA: Cierra por STOP LOSS si BAJA, por TAKE PROFIT si SUBE
                 if precio_actual_real <= operacion['stop_loss']:
-                    # Cierre por STOP LOSS
                     profit_loss = -operacion['cantidad'] * 0.03
                     operacion.update({
                         'estado': 'CERRADA - STOP LOSS',
                         'precio_salida': operacion['stop_loss'],
                         'profit_loss': round(profit_loss, 2),
                         'timestamp_cierre': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        'razon_cierre': f"Precio bajó a ${precio_actual_real:,.2f} (Stop Loss: ${operacion['stop_loss']:,.2f})"
+                        'razon_cierre': f"Precio bajó a ${precio_actual_real:,.2f}"
                     })
                     self.capital_actual += operacion['cantidad'] + operacion['profit_loss']
                     operaciones_cerradas.append(operacion)
@@ -238,31 +223,28 @@ class TradingBotCorregido:
                     self.ordenes_activas -= 1
                     
                 elif precio_actual_real >= operacion['take_profit']:
-                    # Cierre por TAKE PROFIT
                     profit_loss = operacion['cantidad'] * 0.06
                     operacion.update({
                         'estado': 'CERRADA - TAKE PROFIT',
                         'precio_salida': operacion['take_profit'],
                         'profit_loss': round(profit_loss, 2),
                         'timestamp_cierre': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        'razon_cierre': f"Precio subió a ${precio_actual_real:,.2f} (Take Profit: ${operacion['take_profit']:,.2f})"
+                        'razon_cierre': f"Precio subió a ${precio_actual_real:,.2f}"
                     })
                     self.capital_actual += operacion['cantidad'] + operacion['profit_loss']
                     operaciones_cerradas.append(operacion)
                     self.operaciones_abiertas.remove(operacion)
                     self.ordenes_activas -= 1
             
-            else:  # VENTA
-                # ✅✅✅ CORRECCIÓN CRÍTICA: VENTA Cierra por STOP LOSS si SUBE, por TAKE PROFIT si BAJA
+            else:
                 if precio_actual_real >= operacion['stop_loss']:
-                    # Cierre por STOP LOSS (precio SUBIÓ)
                     profit_loss = -operacion['cantidad'] * 0.03
                     operacion.update({
                         'estado': 'CERRADA - STOP LOSS',
                         'precio_salida': operacion['stop_loss'],
                         'profit_loss': round(profit_loss, 2),
                         'timestamp_cierre': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        'razon_cierre': f"Precio subió a ${precio_actual_real:,.2f} (Stop Loss: ${operacion['stop_loss']:,.2f})"
+                        'razon_cierre': f"Precio subió a ${precio_actual_real:,.2f}"
                     })
                     self.capital_actual += operacion['cantidad'] + operacion['profit_loss']
                     operaciones_cerradas.append(operacion)
@@ -270,21 +252,19 @@ class TradingBotCorregido:
                     self.ordenes_activas -= 1
                     
                 elif precio_actual_real <= operacion['take_profit']:
-                    # Cierre por TAKE PROFIT (precio BAJÓ)
                     profit_loss = operacion['cantidad'] * 0.06
                     operacion.update({
                         'estado': 'CERRADA - TAKE PROFIT',
                         'precio_salida': operacion['take_profit'],
                         'profit_loss': round(profit_loss, 2),
                         'timestamp_cierre': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        'razon_cierre': f"Precio bajó a ${precio_actual_real:,.2f} (Take Profit: ${operacion['take_profit']:,.2f})"
+                        'razon_cierre': f"Precio bajó a ${precio_actual_real:,.2f}"
                     })
                     self.capital_actual += operacion['cantidad'] + operacion['profit_loss']
                     operaciones_cerradas.append(operacion)
                     self.operaciones_abiertas.remove(operacion)
                     self.ordenes_activas -= 1
         
-        # Actualizar historial
         for op_cerrada in operaciones_cerradas:
             for i, op in enumerate(self.historial):
                 if op.get('id') == op_cerrada['id'] and op['estado'] == 'ABIERTA':
@@ -301,7 +281,8 @@ class TradingBotCorregido:
             'proximo_par': self.pares_mostrar[(self.pair_index + 1) % len(self.pares)],
             'operaciones_abiertas': len(self.operaciones_abiertas),
             'ultima_actualizacion': self.ultima_actualizacion.strftime("%H:%M:%S") if self.ultima_actualizacion else "Nunca",
-            'total_operaciones': len(self.historial)
+            'total_operaciones': len(self.historial),
+            'auto_trading': self.auto_trading
         }
     
     def obtener_historial(self):
@@ -314,7 +295,6 @@ class TradingBotCorregido:
         return None
     
     def reiniciar_sistema(self):
-        """Reinicio COMPLETO con guardado persistente"""
         self.capital_actual = self.capital
         self.senales_compra = 0
         self.senales_venta = 0
@@ -323,30 +303,49 @@ class TradingBotCorregido:
         self.historial = []
         self.pair_index = 0
         self.ultima_actualizacion = datetime.now()
+        self.auto_trading = False
         self._guardar_estado_persistente()
+    
+    def toggle_auto_trading(self):
+        self.auto_trading = not self.auto_trading
+        self._guardar_estado_persistente()
+        return self.auto_trading
 
-# Inicializar el bot CON LÓGICA CORREGIDA
+# Inicializar el bot
 if 'trading_bot' not in st.session_state:
-    st.session_state.trading_bot = TradingBotCorregido()
+    st.session_state.trading_bot = TradingBotContinuo()
 
-# Sidebar - Configuración
-st.sidebar.header("⚙️ Configuración - LÓGICA CORREGIDA")
+# Sidebar - Configuración MEJORADA
+st.sidebar.header("⚙️ Configuración - EJECUCIÓN CONTINUA")
 
-st.sidebar.success("""
-**✅ LÓGICA DE VENTAS CORREGIDA**
-- VENTAS: Ganan con BAJADAS
-- COMPRAS: Ganan con SUBIDAS  
-- Stop Loss/Take Profit correctos
-""")
+# Auto-trading toggle
+auto_trading = st.sidebar.toggle("🔄 Auto-Trading Continuo", 
+                                value=st.session_state.trading_bot.auto_trading,
+                                help="Ejecuta automáticamente cada 2 minutos")
 
-# Layout principal
-col1, col2, col3 = st.columns([2, 1, 1])
+if auto_trading != st.session_state.trading_bot.auto_trading:
+    st.session_state.trading_bot.auto_trading = auto_trading
+    st.session_state.trading_bot._guardar_estado_persistente()
+
+if st.session_state.trading_bot.auto_trading:
+    st.sidebar.success("✅ Auto-Trading ACTIVO")
+    # Ejecutar automáticamente
+    with st.spinner("Auto-ejecutando..."):
+        st.session_state.trading_bot.analizar_y_ejecutar()
+        time.sleep(120)  # Esperar 2 minutos
+        st.rerun()
+else:
+    st.sidebar.info("⏸️ Auto-Trading PAUSADO")
+
+# Layout principal MEJORADO - SIN INTERRUPCIONES
+col1, col2 = st.columns([2, 1])
 
 with col1:
-    st.header("📈 Análisis con Lógica Corregida")
+    st.header("📈 Trading en Vivo")
     
-    if st.button("🔄 ANALIZAR Y OPERAR", type="primary", use_container_width=True):
-        with st.spinner("Ejecutando con lógica corregida..."):
+    # Botón de análisis SIN interrupciones
+    if st.button("🔄 ANALIZAR Y OPERAR AHORA", type="primary", use_container_width=True):
+        with st.spinner("Ejecutando análisis..."):
             resultados = st.session_state.trading_bot.analizar_y_ejecutar()
             
             if resultados:
@@ -362,78 +361,77 @@ with col1:
                             st.metric("Volumen", f"{resultado['volumen_ratio']:.2f}")
                         
                         if resultado['senal']:
-                            st.success(f"✅ ORDEN AUTOMÁTICA: {resultado['senal']} EJECUTADA")
-                            st.info("🎯 Lógica de ventas/compras corregida")
+                            st.success(f"✅ ORDEN EJECUTADA: {resultado['senal']}")
+    
+    # Operaciones abiertas SIEMPRE VISIBLES
+    if st.session_state.trading_bot.operaciones_abiertas:
+        st.subheader("🔓 Operaciones Activas")
+        for op in st.session_state.trading_bot.operaciones_abiertas:
+            precio_actual = st.session_state.trading_bot.obtener_precio_real(op['par'].replace("/", ""))
+            
+            if op['tipo'] == "COMPRA":
+                profit_actual = ((precio_actual - op['precio_entrada']) / op['precio_entrada']) * 100
+                color = "🟢" if profit_actual > 0 else "🔴"
+            else:
+                profit_actual = ((op['precio_entrada'] - precio_actual) / op['precio_entrada']) * 100
+                color = "🟢" if profit_actual > 0 else "🔴"
+            
+            st.info(f"""
+            **{op['par']}** - {op['tipo']} | ID: {op['id']}
+            • **Entrada:** ${op['precio_entrada']:,.2f}
+            • **Actual:** ${precio_actual:,.2f} {color} ({profit_actual:+.1f}%)
+            • **Stop Loss:** ${op['stop_loss']:,.2f} 
+            • **Take Profit:** ${op['take_profit']:,.2f}
+            • **Invertido:** ${op['cantidad']:.2f}
+            """)
 
 with col2:
-    st.header("💼 Estado Actual")
+    st.header("📊 Rendimiento en Tiempo Real")
     
     estado = st.session_state.trading_bot.obtener_estado()
     
+    # Métricas principales
     st.metric("Capital Actual", f"${estado['capital_actual']:.2f}")
     st.metric("Señales Compra", estado['senales_compra'])
     st.metric("Señales Venta", estado['senales_venta'])
     st.metric("Órdenes Activas", estado['ordenes_activas'])
     
-    st.metric("Par Actual", estado['par_actual'])
-    st.metric("Total Operaciones", estado['total_operaciones'])
-
-with col3:
-    st.header("📊 Rendimiento")
-    
-    if st.button("📋 Ver Historial Completo"):
-        historial = st.session_state.trading_bot.obtener_historial()
-        if historial is not None and not historial.empty:
-            st.dataframe(historial, use_container_width=True)
+    # Historial SIEMPRE VISIBLE - sin botones que interrumpan
+    st.subheader("📋 Historial de Operaciones")
+    historial = st.session_state.trading_bot.obtener_historial()
+    if historial is not None and not historial.empty:
+        st.dataframe(historial, use_container_width=True, height=250)
+        
+        # Resumen automático
+        if 'profit_loss' in historial.columns:
+            total_ganancias = historial['profit_loss'].sum()
+            st.metric("Ganancias/Pérdidas Total", f"${total_ganancias:.2f}")
             
-            if 'profit_loss' in historial.columns:
-                total_ganancias = historial['profit_loss'].sum()
-                st.metric("Ganancias/Pérdidas Total", f"${total_ganancias:.2f}")
-        else:
-            st.info("No hay operaciones en el historial")
+            ops_ganadoras = len(historial[historial['profit_loss'] > 0])
+            ops_totales = len(historial)
+            if ops_totales > 0:
+                tasa_exito = (ops_ganadoras / ops_totales) * 100
+                st.metric("Tasa de Éxito", f"{tasa_exito:.1f}%")
+    else:
+        st.info("📈 El historial aparecerá aquí automáticamente")
     
-    if st.button("🔄 Reiniciar Sistema", type="secondary"):
+    # Botón de reinicio (único que puede pausar brevemente)
+    if st.button("🔄 Reiniciar Sistema Completo", type="secondary"):
         st.session_state.trading_bot.reiniciar_sistema()
-        st.success("✅ Sistema reiniciado y estado guardado")
+        st.success("✅ Sistema reiniciado")
         st.rerun()
 
-# Operaciones abiertas CON EXPLICACIÓN CLARA
-if st.session_state.trading_bot.operaciones_abiertas:
-    st.header("🔓 Operaciones Abiertas - LÓGICA EXPLICADA")
-    for op in st.session_state.trading_bot.operaciones_abiertas:
-        precio_actual = st.session_state.trading_bot.obtener_precio_real(op['par'].replace("/", ""))
-        
-        if op['tipo'] == "COMPRA":
-            profit_actual = ((precio_actual - op['precio_entrada']) / op['precio_entrada']) * 100
-            color = "🟢" if profit_actual > 0 else "🔴"
-        else:  # VENTA
-            profit_actual = ((op['precio_entrada'] - precio_actual) / op['precio_entrada']) * 100
-            color = "🟢" if profit_actual > 0 else "🔴"
-        
-        st.info(f"""
-        **{op['par']}** - {op['tipo']} | ID: {op['id']}
-        • **Entrada:** ${op['precio_entrada']:,.2f}
-        • **Actual:** ${precio_actual:,.2f} {color} ({profit_actual:+.1f}%)
-        • **Stop Loss:** ${op['stop_loss']:,.2f} 
-        • **Take Profit:** ${op['take_profit']:,.2f}
-        • **Invertido:** ${op['cantidad']:.2f}
-        • **Lógica:** {op.get('explicacion', '')}
-        """)
-
-# Footer
+# Footer informativo
 st.markdown("---")
-st.markdown("**✅ LÓGICA CORREGIDA:** VENTAS ganan con bajadas | COMPRAS ganan con subidas")
-st.markdown("**🎯 STOP LOSS/TAKE PROFIT:** Configurados correctamente para cada tipo de operación")
+st.markdown("**🎯 SISTEMA CONTINUO:** Historial siempre visible - Sin interrupciones")
+st.markdown("**🤖 AUTO-TRADING:** Ejecución automática cada 2 minutos (opcional)")
 
-# Debug de persistencia
-with st.expander("🔧 Debug de Sistema"):
+# Debug simplificado
+with st.expander("🔍 Estado del Sistema"):
     estado = st.session_state.trading_bot.obtener_estado()
-    st.write("**Estado actual:**", estado)
-    st.write("**Operaciones abiertas:**", len(st.session_state.trading_bot.operaciones_abiertas))
-    st.write("**Total en historial:**", len(st.session_state.trading_bot.historial))
+    st.json(estado)
     
-    # Verificar archivo de persistencia
     if os.path.exists('/tmp/trading_bot_state.json'):
-        st.success("✅ Archivo persistente encontrado")
+        st.success("✅ Persistencia activa")
     else:
-        st.warning("⚠️ Archivo persistente no encontrado (primera ejecución)")
+        st.info("🆕 Primera ejecución")
