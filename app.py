@@ -9,7 +9,7 @@ import os
 
 # Configuración de la página
 st.set_page_config(
-    page_title="Bot Trading MEXC - SIN INTERRUPCIONES",
+    page_title="Bot Trading MEXC - EJECUCIÓN CONTINUA",
     page_icon="🤖",
     layout="wide"
 )
@@ -33,7 +33,7 @@ class TradingBotContinuo:
         self.pair_index = 0
         self.ultima_analisis = None
         self.ultima_actualizacion = None
-        self.auto_trading = False
+        self.auto_trading = False  # ✅ Inicializado correctamente
         
         # Cargar estado PERSISTENTE
         self._cargar_estado_persistente()
@@ -85,7 +85,7 @@ class TradingBotContinuo:
                 self.operaciones_abiertas = estado_cargado.get('operaciones_abiertas', [])
                 self.historial = estado_cargado.get('historial', [])
                 self.pair_index = estado_cargado.get('pair_index', 0)
-                self.auto_trading = estado_cargado.get('auto_trading', False)
+                self.auto_trading = estado_cargado.get('auto_trading', False)  # ✅ Cargado seguro
                 
                 ultima_act = estado_cargado.get('ultima_actualizacion')
                 if ultima_act:
@@ -93,6 +93,7 @@ class TradingBotContinuo:
                 
         except Exception as e:
             self.capital_actual = 250.0
+            self.auto_trading = False
     
     def obtener_precio_real(self, simbolo):
         """Obtiene precio REAL de MEXC"""
@@ -318,9 +319,12 @@ if 'trading_bot' not in st.session_state:
 # Sidebar - Configuración MEJORADA
 st.sidebar.header("⚙️ Configuración - EJECUCIÓN CONTINUA")
 
+# ✅ CORRECCIÓN: Manejo seguro del atributo auto_trading
+auto_trading_value = getattr(st.session_state.trading_bot, 'auto_trading', False)
+
 # Auto-trading toggle
 auto_trading = st.sidebar.toggle("🔄 Auto-Trading Continuo", 
-                                value=st.session_state.trading_bot.auto_trading,
+                                value=auto_trading_value,
                                 help="Ejecuta automáticamente cada 2 minutos")
 
 if auto_trading != st.session_state.trading_bot.auto_trading:
