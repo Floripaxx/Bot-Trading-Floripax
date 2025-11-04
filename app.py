@@ -6,9 +6,6 @@ import time
 import requests
 import json
 import os
-import sqlite3
-from google.oauth2 import service_account
-import gspread
 
 # Configuración de la página
 st.set_page_config(
@@ -43,7 +40,7 @@ class TradingBotPersistente:
     def _guardar_estado_persistente(self):
         """GUARDADO DEFINITIVO - Supervive a recargas"""
         try:
-            # 1️⃣ PERSISTENCIA LOCAL (Archivo temporal en Streamlit Cloud)
+            # PERSISTENCIA LOCAL (Archivo temporal en Streamlit Cloud)
             estado = {
                 'capital_actual': self.capital_actual,
                 'senales_compra': self.senales_compra,
@@ -59,12 +56,10 @@ class TradingBotPersistente:
             with open('/tmp/trading_bot_state.json', 'w') as f:
                 json.dump(estado, f, indent=2)
             
-            # 2️⃣ PERSISTENCIA EN SESSION_STATE (backup inmediato)
+            # PERSISTENCIA EN SESSION_STATE (backup inmediato)
             if 'bot_persistent_state' not in st.session_state:
                 st.session_state.bot_persistent_state = {}
             st.session_state.bot_persistent_state = estado
-            
-            st.success("💾 Estado guardado PERSISTENTEMENTE")
             
         except Exception as e:
             st.error(f"❌ Error guardando estado: {e}")
@@ -78,12 +73,10 @@ class TradingBotPersistente:
             if os.path.exists('/tmp/trading_bot_state.json'):
                 with open('/tmp/trading_bot_state.json', 'r') as f:
                     estado_cargado = json.load(f)
-                st.sidebar.success("✅ Estado recuperado de archivo persistente")
             
             # 2️⃣ INTENTAR cargar desde session_state (fallback)
             elif 'bot_persistent_state' in st.session_state and st.session_state.bot_persistent_state:
                 estado_cargado = st.session_state.bot_persistent_state
-                st.sidebar.info("🔄 Estado recuperado de session_state")
             
             # 3️⃣ Si hay estado cargado, aplicarlo
             if estado_cargado:
@@ -99,27 +92,12 @@ class TradingBotPersistente:
                 if ultima_act:
                     self.ultima_actualizacion = datetime.fromisoformat(ultima_act)
                 
-                st.sidebar.info(f"📊 Estado cargado: ${self.capital_actual} | Historial: {len(self.historial)} ops")
-            else:
-                st.sidebar.warning("🆕 Estado inicial - Sin datos previos")
-                
         except Exception as e:
-            st.sidebar.error(f"⚠️ Error cargando estado: {e}")
             # Estado por defecto
             self.capital_actual = 250.0
     
-    def _backup_google_sheets(self):
-        """OPCIONAL: Backup en Google Sheets (configurar después)"""
-        try:
-            # Esto requiere configuración de API de Google
-            # Por ahora es un placeholder para futura implementación
-            pass
-        except Exception as e:
-            # Fall silencioso - no es crítico
-            pass
-    
     def obtener_precio_real(self, simbolo):
-        """Obtiene precio REAL de MEXC - MANTENIDO DE VERSIÓN ANTERIOR"""
+        """Obtiene precio REAL de MEXC"""
         try:
             url = f"https://api.mexc.com/api/v3/ticker/price?symbol={simbolo}"
             response = requests.get(url, timeout=10)
@@ -139,7 +117,6 @@ class TradingBotPersistente:
                 }
                 return precios_fallback.get(simbolo, 100.0)
         except Exception as e:
-            st.error(f"Error obteniendo precio real: {e}")
             # Fallback garantizado
             precios_fallback = {
                 "BTCUSDT": 100900.0,
@@ -160,7 +137,7 @@ class TradingBotPersistente:
         return resultados_analisis
     
     def _analizar_mercado_real(self):
-        """Análisis de mercado con precios REALES - MANTENIDO"""
+        """Análisis de mercado con precios REALES"""
         par_actual = self.pares[self.pair_index]
         
         # Obtener precio REAL de MEXC
@@ -197,7 +174,7 @@ class TradingBotPersistente:
         return [resultado]
     
     def _ejecutar_ordenes_automaticas(self, resultados):
-        """Ejecuta órdenes AUTOMÁTICAMENTE - MANTENIDO"""
+        """Ejecuta órdenes AUTOMÁTICAMENTE"""
         for resultado in resultados:
             if resultado['senal'] and self.capital_actual > 25:
                 
@@ -224,7 +201,7 @@ class TradingBotPersistente:
                 self.pair_index = (self.pair_index + 1) % len(self.pares)
     
     def _gestionar_operaciones_abiertas(self):
-        """Cierra operaciones con precios REALES - MANTENIDO"""
+        """Cierra operaciones con precios REALES"""
         operaciones_cerradas = []
         
         for operacion in self.operaciones_abiertas[:]:
@@ -298,29 +275,19 @@ class TradingBotPersistente:
         self.historial = []
         self.pair_index = 0
         self.ultima_actualizacion = datetime.now()
-        self._guardar_estado_persistente()  # ✅ Guardar estado limpio
+        self._guardar_estado_persistente()
 
 # Inicializar el bot CON PERSISTENCIA
 if 'trading_bot' not in st.session_state:
     st.session_state.trading_bot = TradingBotPersistente()
 
-# Sidebar - Configuración MEJORADA
+# Sidebar - Configuración
 st.sidebar.header("⚙️ Configuración - PERSISTENCIA TOTAL")
 
 st.sidebar.success("""
 **💾 PERSISTENCIA ACTIVADA**
 - Archivo temporal sobrevive recargas
 - Session_state como backup
-- Google Sheets preparado
-""")
-
-# Estado de persistencia
-estado = st.session_state.trading_bot.obtener_estado()
-st.sidebar.info(f"""
-**📊 Estado Recuperado:**
-- Capital: ${estado['capital_actual']}
-- Ops en historial: {estado['total_operaciones']}
-- Última actualización: {estado['ultima_actualizacion']}
 """)
 
 # Layout principal
@@ -370,7 +337,6 @@ with col3:
         if historial is not None and not historial.empty:
             st.dataframe(historial, use_container_width=True)
             
-            # Resumen de ganancias
             if 'profit_loss' in historial.columns:
                 total_ganancias = historial['profit_loss'].sum()
                 st.metric("Ganancias/Pérdidas Total", f"${total_ganancias:.2f}")
@@ -419,9 +385,8 @@ if st.sidebar.checkbox("🔄 Auto-analizar cada 3 minutos", value=True):
 
 # Footer
 st.markdown("---")
-st.markdown("**💾 SISTEMA PERSISTENTE:** Archivo temporal + SessionState + Backup preparado")
+st.markdown("**💾 SISTEMA PERSISTENTE:** Archivo temporal + SessionState")
 st.markdown("**✅ GARANTIZADO:** Operaciones e historial SOBREVIVEN a recargas")
-st.markdown("**⚠️ Advertencia:** Trading simulado - Persistencia activada")
 
 # Debug de persistencia
 with st.expander("🔧 Debug de Persistencia"):
@@ -433,8 +398,5 @@ with st.expander("🔧 Debug de Persistencia"):
     # Verificar archivo de persistencia
     if os.path.exists('/tmp/trading_bot_state.json'):
         st.success("✅ Archivo persistente encontrado")
-        with open('/tmp/trading_bot_state.json', 'r') as f:
-            contenido = json.load(f)
-            st.write("**Contenido del archivo:**", contenido.keys())
     else:
         st.warning("⚠️ Archivo persistente no encontrado (primera ejecución)")
