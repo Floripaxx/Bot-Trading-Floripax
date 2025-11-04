@@ -9,17 +9,17 @@ import os
 
 # Configuración de la página
 st.set_page_config(
-    page_title="Bot Trading MEXC - AUTO-TRADING FUNCIONANDO",
+    page_title="Bot Trading MEXC - AUTO-INICIO",
     page_icon="🤖",
     layout="wide"
 )
 
 # Título principal
-st.title("🤖 Bot de Trading MEXC - AUTO-TRADING ACTIVO")
+st.title("🤖 Bot de Trading MEXC - AUTO-INICIO ACTIVADO")
 st.markdown("---")
 
-# Clase del bot MEJORADA - Auto-Trading funcional
-class TradingBotAuto:
+# Clase del bot MEJORADA - con auto-inicio
+class TradingBotAutoInicio:
     def __init__(self):
         self.capital = 250.0
         self.capital_actual = 250.0
@@ -307,35 +307,49 @@ class TradingBotAuto:
 
 # Inicializar el bot
 if 'trading_bot' not in st.session_state:
-    st.session_state.trading_bot = TradingBotAuto()
+    st.session_state.trading_bot = TradingBotAutoInicio()
+
+# ✅✅✅ CORRECCIÓN CRÍTICA: AUTO-INICIO del contador
+if st.session_state.trading_bot.auto_trading and 'last_auto_run' not in st.session_state:
+    st.session_state.last_auto_run = time.time()
+    st.success("🔄 Auto-Trading reiniciado automáticamente")
 
 # Sidebar - Configuración MEJORADA
-st.sidebar.header("⚙️ Configuración - AUTO-TRADING")
-
-# ✅ CORRECCIÓN: Auto-Trading sin bloquear la interfaz
-auto_trading_value = getattr(st.session_state.trading_bot, 'auto_trading', False)
+st.sidebar.header("⚙️ Configuración - AUTO-INICIO")
 
 # Auto-trading toggle
+auto_trading_value = getattr(st.session_state.trading_bot, 'auto_trading', False)
+
 auto_trading = st.sidebar.toggle("🔄 Auto-Trading Continuo", 
                                 value=auto_trading_value,
-                                help="Ejecuta automáticamente cada 2 minutos")
+                                help="Ejecuta automáticamente cada 2 minutos - Se reinicia automáticamente")
 
 if auto_trading != st.session_state.trading_bot.auto_trading:
     st.session_state.trading_bot.auto_trading = auto_trading
     st.session_state.trading_bot._guardar_estado_persistente()
+    
+    # Reiniciar contador cuando se activa/desactiva
+    if auto_trading:
+        st.session_state.last_auto_run = time.time()
+        st.sidebar.success("✅ Auto-Trading ACTIVADO")
+    else:
+        if 'last_auto_run' in st.session_state:
+            del st.session_state.last_auto_run
+        st.sidebar.info("⏸️ Auto-Trading PAUSADO")
+    
     st.rerun()
 
-# ✅ SISTEMA MEJORADO: Auto-Trading no bloqueante
+# ✅ SISTEMA MEJORADO: Auto-Trading con auto-inicio
 if st.session_state.trading_bot.auto_trading:
     st.sidebar.success("✅ Auto-Trading ACTIVO")
     
-    # Inicializar contador si no existe
+    # Asegurar que el contador existe
     if 'last_auto_run' not in st.session_state:
         st.session_state.last_auto_run = time.time()
     
     # Calcular tiempo transcurrido
     tiempo_transcurrido = time.time() - st.session_state.last_auto_run
-    tiempo_restante = max(0, 120 - tiempo_transcurrido)  # 2 minutos
+    tiempo_restante = max(0, 120 - tiempo_transcurrido)
     
     # Mostrar contador
     st.sidebar.write(f"⏱️ Próxima ejecución en: {int(tiempo_restante)}s")
@@ -356,13 +370,12 @@ if st.session_state.trading_bot.auto_trading:
 else:
     st.sidebar.info("⏸️ Auto-Trading PAUSADO")
 
-# Layout principal MEJORADO
+# Layout principal
 col1, col2 = st.columns([2, 1])
 
 with col1:
     st.header("📈 Trading en Vivo")
     
-    # Botón manual de análisis
     if st.button("🔄 ANALIZAR Y OPERAR AHORA", type="primary", use_container_width=True):
         with st.spinner("Ejecutando análisis manual..."):
             resultados = st.session_state.trading_bot.analizar_y_ejecutar()
@@ -382,7 +395,6 @@ with col1:
                         if resultado['senal']:
                             st.success(f"✅ ORDEN EJECUTADA: {resultado['senal']}")
     
-    # Operaciones abiertas SIEMPRE VISIBLES
     if st.session_state.trading_bot.operaciones_abiertas:
         st.subheader("🔓 Operaciones Activas")
         for op in st.session_state.trading_bot.operaciones_abiertas:
@@ -409,13 +421,11 @@ with col2:
     
     estado = st.session_state.trading_bot.obtener_estado()
     
-    # Métricas principales
     st.metric("Capital Actual", f"${estado['capital_actual']:.2f}")
     st.metric("Señales Compra", estado['senales_compra'])
     st.metric("Señales Venta", estado['senales_venta'])
     st.metric("Órdenes Activas", estado['ordenes_activas'])
     
-    # Historial SIEMPRE VISIBLE
     st.subheader("📋 Historial de Operaciones")
     historial = st.session_state.trading_bot.obtener_historial()
     if historial is not None and not historial.empty:
@@ -435,13 +445,15 @@ with col2:
     
     if st.button("🔄 Reiniciar Sistema Completo", type="secondary"):
         st.session_state.trading_bot.reiniciar_sistema()
+        if 'last_auto_run' in st.session_state:
+            del st.session_state.last_auto_run
         st.success("✅ Sistema reiniciado")
         st.rerun()
 
 # Footer informativo
 st.markdown("---")
-st.markdown("**🎯 AUTO-TRADING FUNCIONAL:** Ejecución cada 2 minutos sin bloquear")
-st.markdown("**⏱️ CONTADOR EN TIEMPO REAL:** Sabrás cuándo se ejecutará el próximo análisis")
+st.markdown("**🔄 AUTO-INICIO ACTIVADO:** El Auto-Trading se reinicia automáticamente después de recargar")
+st.markdown("**💾 PERSISTENCIA COMPLETA:** Estado y configuraciones se mantienen")
 
 # Estado del sistema
 with st.expander("🔍 Estado del Sistema"):
