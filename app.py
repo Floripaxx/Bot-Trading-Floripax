@@ -1,151 +1,318 @@
-# ... código anterior ...
+import streamlit as st
+import pandas as pd
+import numpy as np
+import time
+from datetime import datetime
+import requests
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
-def obtener_senal_compra_venta(df, rsi_periodo=14, bb_periodo=20, stoch_k=14, stoch_d=3, adx_periodo=14):
+# Configurar página de Streamlit
+st.set_page_config(
+    page_title="Bot de Trading FloripaX",
+    page_icon="📈",
+    layout="wide"
+)
+
+# Título principal
+st.title("🤖 Bot de Trading FloripaX")
+st.markdown("---")
+
+# Función para obtener datos de Binance
+def obtener_datos_binance(symbol='BTCUSDT', interval='1m', limit=100):
+    """
+    Obtener datos de Binance API
+    """
+    try:
+        url = f"https://api.binance.com/api/v3/klines"
+        params = {
+            'symbol': symbol,
+            'interval': interval,
+            'limit': limit
+        }
+        
+        response = requests.get(url, params=params, timeout=10)
+        data = response.json()
+        
+        # Crear DataFrame
+        df = pd.DataFrame(data, columns=[
+            'timestamp', 'open', 'high', 'low', 'close', 'volume',
+            'close_time', 'quote_asset_volume', 'number_of_trades',
+            'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
+        ])
+        
+        # Convertir tipos de datos
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        for col in ['open', 'high', 'low', 'close', 'volume']:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        
+        # Eliminar filas con NaN
+        df = df.dropna()
+        
+        return df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
+        
+    except Exception as e:
+        st.error(f"Error obteniendo datos: {e}")
+        return None
+
+# Función para calcular RSI de manera robusta
+def calcular_rsi(df, period=14):
+    """Calcular RSI con manejo de errores"""
+    try:
+        delta = df['close'].diff()
+        gain = delta.where(delta > 0, 0)
+        loss = -delta.where(delta < 0, 0)
+        
+        avg_gain = gain.rolling(window=period, min_periods=1).mean()
+        avg_loss = loss.rolling(window=period, min_periods=1).mean()
+        
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        
+        # Reemplazar infinitos y NaN
+        rsi = rsi.replace([np.inf, -np.inf], np.nan).fillna(50)
+        return rsi
+    except Exception as e:
+        st.error(f"Error calculando RSI: {e}")
+        return pd.Series([50] * len(df))
+
+# Función para calcular Bandas de Bollinger
+def calcular_bb(df, period=20, std=2):
+    """Calcular Bandas de Bollinger"""
+    try:
+        df = df.copy()
+        df['bb_middle'] = df['close'].rolling(window=period, min_periods=1).mean()
+        bb_std = df['close'].rolling(window=period, min_periods=1).std()
+        
+        df['bb_upper'] = df['bb_middle'] + (bb_std * std)
+        df['bb_lower'] = df['bb_middle'] - (bb_std * std)
+        
+        return df['bb_upper'], df['bb_middle'], df['bb_lower']
+    except Exception as e:
+        st.error(f"Error calculando BB: {e}")
+        return None, None, None
+
+# Función para calcular Estocástico
+def calcular_estocastico(df, k_period=14, d_period=3):
+    """Calcular Estocástico"""
+    try:
+        low_min = df['low'].rolling(window=k_period, min_periods=1).min()
+        high_max = df['high'].rolling(window=k_period, min_periods=1).max()
+        
+        df['stoch_k'] = 100 * ((df['close'] - low_min) / (high_max - low_min))
+        df['stoch_k'] = df['stoch_k'].replace([np.inf, -np.inf], 50).fillna(50)
+        df['stoch_d'] = df['stoch_k'].rolling(window=d_period, min_periods=1).mean()
+        
+        return df['stoch_k'], df['stoch_d']
+    except Exception as e:
+        st.error(f"Error calculando Estocástico: {e}")
+        return None, None
+
+# Función principal de señales
+def obtener_senal_compra_venta(df):
     """
     Obtener señal de compra o venta basada en múltiples indicadores
     """
     try:
-        # Calcular RSI
-        delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=rsi_periodo).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=rsi_periodo).mean()
-        rs = gain / loss
-        df['rsi'] = 100 - (100 / (1 + rs))
+        if df is None or len(df) < 20:
+            return False, False, "Datos insuficientes"
         
-        # Calcular Bandas de Bollinger
-        bb_ma = df['close'].rolling(window=bb_periodo).mean()
-        bb_std = df['close'].rolling(window=bb_periodo).std()
-        df['bb_upper'] = bb_ma + (bb_std * 2)
-        df['bb_lower'] = bb_ma - (bb_std * 2)
-        df['bb_middle'] = bb_ma
-        
-        # Calcular Estocástico
-        low_min = df['low'].rolling(window=stoch_k).min()
-        high_max = df['high'].rolling(window=stoch_k).max()
-        df['stoch_k'] = 100 * ((df['close'] - low_min) / (high_max - low_min))
-        df['stoch_d'] = df['stoch_k'].rolling(window=stoch_d).mean()
-        
-        # Calcular ADX
-        df['tr'] = np.maximum(
-            df['high'] - df['low'],
-            np.maximum(
-                abs(df['high'] - df['close'].shift(1)),
-                abs(df['low'] - df['close'].shift(1))
-            )
-        )
-        df['plus_dm'] = np.where(
-            (df['high'] - df['high'].shift(1)) > (df['low'].shift(1) - df['low']),
-            np.maximum(df['high'] - df['high'].shift(1), 0),
-            0
-        )
-        df['minus_dm'] = np.where(
-            (df['low'].shift(1) - df['low']) > (df['high'] - df['high'].shift(1)),
-            np.maximum(df['low'].shift(1) - df['low'], 0),
-            0
-        )
-        
-        tr_smooth = df['tr'].rolling(window=adx_periodo).mean()
-        plus_dm_smooth = df['plus_dm'].rolling(window=adx_periodo).mean()
-        minus_dm_smooth = df['minus_dm'].rolling(window=adx_periodo).mean()
-        
-        df['plus_di'] = 100 * (plus_dm_smooth / tr_smooth)
-        df['minus_di'] = 100 * (minus_dm_smooth / tr_smooth)
-        dx = 100 * (abs(df['plus_di'] - df['minus_di']) / (df['plus_di'] + df['minus_di']))
-        df['adx'] = dx.rolling(window=adx_periodo).mean()
+        # Calcular indicadores
+        df['rsi'] = calcular_rsi(df)
+        df['bb_upper'], df['bb_middle'], df['bb_lower'] = calcular_bb(df)
+        df['stoch_k'], df['stoch_d'] = calcular_estocastico(df)
         
         # Obtener últimos valores
         ultimo = df.iloc[-1]
         penultimo = df.iloc[-2]
         
-        # CONDICIONES DE COMPRA (más estrictas)
-        condicion_compra_rsi = (ultimo['rsi'] < 35 and penultimo['rsi'] >= 35)
-        condicion_compra_bb = ultimo['close'] < ultimo['bb_lower']
-        condicion_compra_stoch = (ultimo['stoch_k'] < 20 and ultimo['stoch_d'] < 20 and 
+        # CONDICIONES DE COMPRA
+        condicion_compra_rsi = (ultimo['rsi'] < 35)
+        condicion_compra_bb = (ultimo['close'] < ultimo['bb_lower'])
+        condicion_compra_stoch = (ultimo['stoch_k'] < 20 and 
                                 ultimo['stoch_k'] > ultimo['stoch_d'])
-        condicion_compra_adx = ultimo['adx'] > 25
-        condicion_tendencia = ultimo['plus_di'] > ultimo['minus_di']
         
-        # Señal de compra (requiere múltiples condiciones)
-        senal_compra = (
-            condicion_compra_rsi and 
-            condicion_compra_bb and 
-            condicion_compra_stoch and
-            condicion_tendencia and
-            condicion_compra_adx
-        )
+        # Señal de compra
+        senal_compra = (condicion_compra_rsi and 
+                       condicion_compra_bb and 
+                       condicion_compra_stoch)
         
-        # CONDICIONES DE VENTA (más estrictas)
-        condicion_venta_rsi = (ultimo['rsi'] > 65 and penultimo['rsi'] <= 65)
-        condicion_venta_bb = ultimo['close'] > ultimo['bb_upper']
-        condicion_venta_stoch = (ultimo['stoch_k'] > 80 and ultimo['stoch_d'] > 80 and 
+        # CONDICIONES DE VENTA
+        condicion_venta_rsi = (ultimo['rsi'] > 65)
+        condicion_venta_bb = (ultimo['close'] > ultimo['bb_upper'])
+        condicion_venta_stoch = (ultimo['stoch_k'] > 80 and 
                                ultimo['stoch_k'] < ultimo['stoch_d'])
-        condicion_venta_adx = ultimo['adx'] > 25
-        condicion_tendencia_venta = ultimo['minus_di'] > ultimo['plus_di']
         
-        # Señal de venta (requiere múltiples condiciones)
-        senal_venta = (
-            condicion_venta_rsi and 
-            condicion_venta_bb and 
-            condicion_venta_stoch and
-            condicion_tendencia_venta and
-            condicion_venta_adx
+        # Señal de venta
+        senal_venta = (condicion_venta_rsi and 
+                      condicion_venta_bb and 
+                      condicion_venta_stoch)
+        
+        # Determinar mensaje de estado
+        if senal_compra:
+            mensaje = "🔵 SEÑAL DE COMPRA FUERTE"
+        elif senal_venta:
+            mensaje = "🔴 SEÑAL DE VENTA FUERTE"
+        else:
+            mensaje = "⚪ SIN SEÑAL - ESPERANDO"
+            
+        return senal_compra, senal_venta, mensaje
+        
+    except Exception as e:
+        st.error(f"Error en señales: {e}")
+        return False, False, f"Error: {e}"
+
+# Función para crear gráfico
+def crear_grafico(df, senal_compra, senal_venta):
+    """Crear gráfico interactivo con Plotly"""
+    try:
+        fig = make_subplots(
+            rows=2, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.1,
+            subplot_titles=('Precio y Bandas de Bollinger', 'RSI'),
+            row_heights=[0.7, 0.3]
         )
         
-        return senal_compra, senal_venta
+        # Gráfico de precio y BB
+        fig.add_trace(
+            go.Scatter(x=df['timestamp'], y=df['close'], 
+                      name='Precio', line=dict(color='blue', width=1)),
+            row=1, col=1
+        )
         
+        if 'bb_upper' in df.columns:
+            fig.add_trace(
+                go.Scatter(x=df['timestamp'], y=df['bb_upper'], 
+                          name='BB Superior', line=dict(color='red', width=1, dash='dash')),
+                row=1, col=1
+            )
+            fig.add_trace(
+                go.Scatter(x=df['timestamp'], y=df['bb_lower'], 
+                          name='BB Inferior', line=dict(color='green', width=1, dash='dash')),
+                row=1, col=1
+            )
+        
+        # Gráfico de RSI
+        fig.add_trace(
+            go.Scatter(x=df['timestamp'], y=df['rsi'], 
+                      name='RSI', line=dict(color='purple', width=1)),
+            row=2, col=1
+        )
+        
+        # Líneas de referencia RSI
+        fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
+        fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
+        fig.add_hline(y=50, line_dash="dot", line_color="gray", row=2, col=1)
+        
+        # Actualizar layout
+        fig.update_layout(
+            height=600,
+            showlegend=True,
+            title_text="Análisis Técnico en Tiempo Real"
+        )
+        
+        return fig
     except Exception as e:
-        print(f"Error calculando señales: {e}")
-        return False, False
+        st.error(f"Error creando gráfico: {e}")
+        return None
 
-# Función para verificar si ya tenemos una operación abierta
-def hay_operacion_abierta(symbol):
-    """
-    Verificar si ya tenemos una operación abierta para evitar duplicados
-    """
+# Interfaz principal
+def main():
     try:
-        # Aquí implementarías la lógica para verificar operaciones abiertas
-        # Por ahora, asumimos que no hay operaciones abiertas
-        return False
-    except Exception as e:
-        print(f"Error verificando operaciones abiertas: {e}")
-        return False
-
-# Función principal mejorada
-def ejecutar_bot():
-    """
-    Función principal del bot con controles para reducir operaciones
-    """
-    try:
+        # Sidebar para controles
+        st.sidebar.title("⚙️ Configuración")
+        
+        # Selector de símbolo
+        simbolo = st.sidebar.selectbox(
+            "Seleccionar Par",
+            ['BTCUSDT', 'ETHUSDT', 'ADAUSDT', 'DOTUSDT', 'LINKUSDT']
+        )
+        
+        # Selector de intervalo
+        intervalo = st.sidebar.selectbox(
+            "Intervalo",
+            ['1m', '5m', '15m', '1h', '4h']
+        )
+        
+        # Botón para actualizar
+        if st.sidebar.button("🔄 Actualizar Datos"):
+            st.rerun()
+        
         # Obtener datos
-        df = obtener_datos_binance()
-        if df is None or len(df) < 50:
-            print("No hay suficientes datos")
-            return
+        with st.spinner('Obteniendo datos de Binance...'):
+            df = obtener_datos_binance(symbol=simbolo, interval=intervalo)
         
-        # Obtener señales
-        senal_compra, senal_venta = obtener_senal_compra_venta(df)
-        
-        # Verificar si ya hay operación abierta
-        if hay_operacion_abierta('BTCUSDT'):
-            print("Ya hay una operación abierta, esperando...")
-            return
-        
-        # Ejecutar órdenes solo si las señales son fuertes
-        if senal_compra:
-            print("🔵 SEÑAL DE COMPRA DETECTADA")
-            # Aquí iría la lógica de compra
+        if df is not None and len(df) > 0:
+            # Calcular señales
+            senal_compra, senal_venta, mensaje = obtener_senal_compra_venta(df)
             
-        elif senal_venta:
-            print("🔴 SEÑAL DE VENTA DETECTADA")
-            # Aquí iría la lógica de venta
+            # Mostrar estado principal
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("Precio Actual", f"${df['close'].iloc[-1]:.2f}")
+            
+            with col2:
+                if senal_compra:
+                    st.success("SEÑAL: COMPRA")
+                elif senal_venta:
+                    st.error("SEÑAL: VENTA")
+                else:
+                    st.info("SEÑAL: NEUTRAL")
+            
+            with col3:
+                st.metric("Última Actualización", 
+                         df['timestamp'].iloc[-1].strftime('%H:%M:%S'))
+            
+            st.markdown(f"### 📊 {mensaje}")
+            st.markdown("---")
+            
+            # Mostrar gráfico
+            fig = crear_grafico(df, senal_compra, senal_venta)
+            if fig:
+                st.plotly_chart(fig, use_container_width=True)
+            
+            # Mostrar datos técnicos
+            st.subheader("📈 Datos Técnicos")
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                if 'rsi' in df.columns:
+                    rsi_actual = df['rsi'].iloc[-1]
+                    st.metric("RSI", f"{rsi_actual:.2f}")
+            
+            with col2:
+                if 'stoch_k' in df.columns:
+                    stoch_actual = df['stoch_k'].iloc[-1]
+                    st.metric("Estocástico K", f"{stoch_actual:.2f}")
+            
+            with col3:
+                if 'bb_upper' in df.columns:
+                    precio_actual = df['close'].iloc[-1]
+                    bb_upper = df['bb_upper'].iloc[-1]
+                    bb_lower = df['bb_lower'].iloc[-1]
+                    pos_bb = ((precio_actual - bb_lower) / (bb_upper - bb_lower)) * 100
+                    st.metric("Posición BB", f"{pos_bb:.1f}%")
+            
+            with col4:
+                volumen_actual = df['volume'].iloc[-1]
+                volumen_promedio = df['volume'].tail(20).mean()
+                cambio_volumen = ((volumen_actual - volumen_promedio) / volumen_promedio) * 100
+                st.metric("Volumen vs Promedio", f"{cambio_volumen:.1f}%")
+            
+            # Mostrar últimos datos
+            st.subheader("📋 Últimos Precios")
+            st.dataframe(df.tail(10)[['timestamp', 'open', 'high', 'low', 'close', 'volume']], 
+                        use_container_width=True)
             
         else:
-            print("⚪ Sin señal clara, esperando...")
+            st.error("❌ No se pudieron obtener datos. Revisa tu conexión a internet.")
             
     except Exception as e:
-        print(f"Error en ejecutar_bot: {e}")
+        st.error(f"❌ Error en la aplicación: {e}")
+        st.info("💡 Intenta recargar la página o verificar tu conexión a internet.")
 
-# Configurar el intervalo de ejecución (más largo para reducir operaciones)
-INTERVALO_EJECUCION = 300  # 5 minutos en lugar de 1 minuto
-
-# ... resto del código ...
+# Ejecutar la aplicación
+if __name__ == "__main__":
+    main()
