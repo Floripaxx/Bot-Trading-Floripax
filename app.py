@@ -18,6 +18,14 @@ st.set_page_config(
 st.title("🤖 Bot de Trading FloripaX - MEXC")
 st.markdown("---")
 
+# Estado inicial del bot (simulado - en producción conectarías con tu broker)
+if 'capital' not in st.session_state:
+    st.session_state.capital = 1000.0  # Capital inicial en USDT
+if 'operaciones_activas' not in st.session_state:
+    st.session_state.operaciones_activas = []
+if 'historial_operaciones' not in st.session_state:
+    st.session_state.historial_operaciones = []
+
 # Función para obtener datos de MEXC (corregida)
 def obtener_datos_mexc(symbol='BTCUSDT', interval='1m', limit=100):
     """
@@ -48,8 +56,6 @@ def obtener_datos_mexc(symbol='BTCUSDT', interval='1m', limit=100):
             'Accept': 'application/json'
         }
         
-        st.info(f"🔍 Solicitando datos para {symbol} en intervalo {mexc_interval}...")
-        
         response = requests.get(url, params=params, headers=headers, timeout=15)
         
         if response.status_code != 200:
@@ -61,11 +67,6 @@ def obtener_datos_mexc(symbol='BTCUSDT', interval='1m', limit=100):
         if not data or len(data) == 0:
             st.error("No se recibieron datos de MEXC")
             return None
-        
-        # DEBUG: Mostrar estructura de datos recibida
-        st.success(f"✅ Datos recibidos: {len(data)} velas")
-        if len(data) > 0:
-            st.info(f"📝 Estructura de la primera vela: {len(data[0])} elementos")
         
         # El formato de MEXC tiene 8 columnas:
         # [timestamp, open, high, low, close, volume, close_time, quote_volume]
@@ -89,7 +90,6 @@ def obtener_datos_mexc(symbol='BTCUSDT', interval='1m', limit=100):
             st.error("No hay datos válidos después de limpiar NaN")
             return None
             
-        st.success(f"✅ DataFrame creado: {len(df)} filas x {len(df.columns)} columnas")
         return df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
         
     except requests.exceptions.Timeout:
@@ -100,20 +100,6 @@ def obtener_datos_mexc(symbol='BTCUSDT', interval='1m', limit=100):
         return None
     except Exception as e:
         st.error(f"❌ Error obteniendo datos de MEXC: {str(e)}")
-        return None
-
-# Función para verificar símbolos disponibles en MEXC
-def verificar_simbolos_mexc():
-    """Verificar símbolos disponibles en MEXC"""
-    try:
-        url = "https://api.mexc.com/api/v3/exchangeInfo"
-        response = requests.get(url, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            symbols = [symbol['symbol'] for symbol in data['symbols'] if symbol['status'] == 'TRADING']
-            return symbols
-        return None
-    except:
         return None
 
 # Función para calcular RSI de manera robusta
@@ -168,6 +154,52 @@ def calcular_estocastico(df, k_period=14, d_period=3):
     except Exception as e:
         st.error(f"Error calculando Estocástico: {e}")
         return None, None
+
+# Función para ejecutar operación de compra
+def ejecutar_compra(symbol, precio, cantidad_usdt):
+    """Ejecutar operación de compra"""
+    try:
+        cantidad_cripto = cantidad_usdt / precio
+        operacion = {
+            'id': f"compra_{int(time.time())}",
+            'symbol': symbol,
+            'tipo': 'COMPRA',
+            'precio_entrada': precio,
+            'cantidad_cripto': cantidad_cripto,
+            'cantidad_usdt': cantidad_usdt,
+            'timestamp': datetime.now(),
+            'estado': 'ACTIVA'
+        }
+        st.session_state.operaciones_activas.append(operacion)
+        st.session_state.capital -= cantidad_usdt
+        return True
+    except Exception as e:
+        st.error(f"Error ejecutando compra: {e}")
+        return False
+
+# Función para ejecutar operación de venta
+def ejecutar_venta(operacion, precio_venta):
+    """Ejecutar operación de venta"""
+    try:
+        ganancia_perdida = (precio_venta - operacion['precio_entrada']) * operacion['cantidad_cripto']
+        
+        # Mover de activas a historial
+        st.session_state.operaciones_activas = [op for op in st.session_state.operaciones_activas if op['id'] != operacion['id']]
+        
+        operacion_cerrada = operacion.copy()
+        operacion_cerrada.update({
+            'precio_salida': precio_venta,
+            'ganancia_perdida': ganancia_perdida,
+            'timestamp_cierre': datetime.now(),
+            'estado': 'CERRADA'
+        })
+        
+        st.session_state.historial_operaciones.append(operacion_cerrada)
+        st.session_state.capital += operacion['cantidad_usdt'] + ganancia_perdida
+        return True
+    except Exception as e:
+        st.error(f"Error ejecutando venta: {e}")
+        return False
 
 # Función principal de señales
 def obtener_senal_compra_venta(df):
@@ -294,31 +326,44 @@ def main():
         # Sidebar para controles
         st.sidebar.title("⚙️ Configuración MEXC")
         
-        # Verificar símbolos disponibles
-        simbolos_disponibles = verificar_simbolos_mexc()
-        if simbolos_disponibles:
-            # Filtrar solo los principales pares USDT
-            pares_principales = [s for s in simbolos_disponibles if s.endswith('USDT')]
-            pares_populares = [s for s in pares_principales if s in [
-                'BTCUSDT', 'ETHUSDT', 'ADAUSDT', 'DOTUSDT', 'LINKUSDT', 
-                'ATOMUSDT', 'NEARUSDT', 'APTUSDT', 'XRPUSDT', 'DOGEUSDT'
-            ]]
-            
-            if pares_populares:
-                simbolo = st.sidebar.selectbox("Seleccionar Par", pares_populares)
-            else:
-                simbolo = st.sidebar.selectbox("Seleccionar Par", ['BTCUSDT', 'ETHUSDT', 'ADAUSDT'])
-        else:
-            # Lista por defecto si no podemos obtener los símbolos
-            simbolo = st.sidebar.selectbox(
-                "Seleccionar Par",
-                ['BTCUSDT', 'ETHUSDT', 'ADAUSDT', 'DOTUSDT', 'LINKUSDT', 'ATOMUSDT', 'NEARUSDT', 'APTUSDT']
-            )
+        # Selector de símbolo
+        simbolo = st.sidebar.selectbox(
+            "Seleccionar Par",
+            ['BTCUSDT', 'ETHUSDT', 'ADAUSDT', 'DOTUSDT', 'LINKUSDT', 'ATOMUSDT', 'NEARUSDT', 'APTUSDT']
+        )
         
         # Selector de intervalo
         intervalo = st.sidebar.selectbox(
             "Intervalo",
             ['1m', '5m', '15m', '1h', '4h']
+        )
+        
+        # Configuración de trading
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("💰 Configuración de Trading")
+        
+        cantidad_operacion = st.sidebar.number_input(
+            "Cantidad por operación (USDT)",
+            min_value=10.0,
+            max_value=float(st.session_state.capital),
+            value=100.0,
+            step=10.0
+        )
+        
+        stop_loss = st.sidebar.number_input(
+            "Stop Loss (%)",
+            min_value=1.0,
+            max_value=20.0,
+            value=2.0,
+            step=0.5
+        )
+        
+        take_profit = st.sidebar.number_input(
+            "Take Profit (%)",
+            min_value=1.0,
+            max_value=50.0,
+            value=5.0,
+            step=0.5
         )
         
         st.sidebar.markdown("---")
@@ -340,22 +385,59 @@ def main():
         if df is not None and len(df) > 0:
             # Calcular señales
             senal_compra, senal_venta, mensaje = obtener_senal_compra_venta(df)
+            precio_actual = df['close'].iloc[-1]
             
-            # Mostrar estado principal
-            col1, col2, col3 = st.columns(3)
+            # Mostrar información de capital y operaciones
+            col1, col2, col3, col4 = st.columns(4)
             
             with col1:
-                st.metric("Precio Actual", f"${df['close'].iloc[-1]:.4f}")
+                st.metric(
+                    "💰 Capital Disponible", 
+                    f"${st.session_state.capital:.2f}",
+                    delta=None
+                )
             
             with col2:
-                if senal_compra:
-                    st.success("SEÑAL: COMPRA")
-                elif senal_venta:
-                    st.error("SEÑAL: VENTA")
-                else:
-                    st.info("SEÑAL: NEUTRAL")
+                st.metric(
+                    "📈 Operaciones Activas", 
+                    f"{len(st.session_state.operaciones_activas)}",
+                    delta=None
+                )
             
             with col3:
+                ganancia_total = sum(op.get('ganancia_perdida', 0) for op in st.session_state.historial_operaciones)
+                color_ganancia = "normal" if ganancia_total >= 0 else "inverse"
+                st.metric(
+                    "🎯 Ganancia/Pérdida Total", 
+                    f"${ganancia_total:.2f}",
+                    delta=None,
+                    delta_color=color_ganancia
+                )
+            
+            with col4:
+                st.metric("Precio Actual", f"${precio_actual:.4f}")
+            
+            # Mostrar estado de señales
+            col5, col6 = st.columns(2)
+            
+            with col5:
+                if senal_compra:
+                    st.success("🎯 SEÑAL: COMPRA")
+                    # Ejecutar compra automáticamente si hay señal y capital
+                    if st.session_state.capital >= cantidad_operacion and len(st.session_state.operaciones_activas) < 3:
+                        if ejecutar_compra(simbolo, precio_actual, cantidad_operacion):
+                            st.success(f"✅ Compra ejecutada: {cantidad_operacion} USDT en {simbolo}")
+                elif senal_venta:
+                    st.error("🎯 SEÑAL: VENTA")
+                    # Cerrar operaciones activas si hay señal de venta
+                    for operacion in st.session_state.operaciones_activas[:]:
+                        if operacion['symbol'] == simbolo:
+                            if ejecutar_venta(operacion, precio_actual):
+                                st.success(f"✅ Venta ejecutada para {operacion['symbol']}")
+                else:
+                    st.info("🎯 SEÑAL: NEUTRAL")
+            
+            with col6:
                 st.metric("Última Actualización", 
                          df['timestamp'].iloc[-1].strftime('%H:%M:%S'))
             
@@ -374,21 +456,21 @@ def main():
             with col1:
                 if 'rsi' in df.columns:
                     rsi_actual = df['rsi'].iloc[-1]
-                    color_rsi = "red" if rsi_actual > 70 else "green" if rsi_actual < 30 else "gray"
-                    st.metric("RSI", f"{rsi_actual:.2f}", delta=None, delta_color=color_rsi)
+                    delta_color_rsi = "inverse" if rsi_actual > 70 else "normal" if rsi_actual < 30 else "off"
+                    st.metric("RSI", f"{rsi_actual:.2f}", delta=None, delta_color=delta_color_rsi)
             
             with col2:
                 if 'stoch_k' in df.columns:
                     stoch_actual = df['stoch_k'].iloc[-1]
-                    color_stoch = "red" if stoch_actual > 80 else "green" if stoch_actual < 20 else "gray"
-                    st.metric("Estocástico K", f"{stoch_actual:.2f}", delta=None, delta_color=color_stoch)
+                    delta_color_stoch = "inverse" if stoch_actual > 80 else "normal" if stoch_actual < 20 else "off"
+                    st.metric("Estocástico K", f"{stoch_actual:.2f}", delta=None, delta_color=delta_color_stoch)
             
             with col3:
                 if 'bb_upper' in df.columns:
                     precio_actual = df['close'].iloc[-1]
                     bb_upper = df['bb_upper'].iloc[-1]
                     bb_lower = df['bb_lower'].iloc[-1]
-                    if bb_upper != bb_lower:  # Evitar división por cero
+                    if bb_upper != bb_lower:
                         pos_bb = ((precio_actual - bb_lower) / (bb_upper - bb_lower)) * 100
                         st.metric("Posición BB", f"{pos_bb:.1f}%")
                     else:
@@ -403,9 +485,22 @@ def main():
                 else:
                     st.metric("Volumen", f"{volumen_actual:.2f}")
             
+            # Mostrar operaciones activas
+            if st.session_state.operaciones_activas:
+                st.subheader("📊 Operaciones Activas")
+                for operacion in st.session_state.operaciones_activas:
+                    if operacion['symbol'] == simbolo:
+                        with st.expander(f"{operacion['tipo']} - {operacion['symbol']} - {operacion['timestamp'].strftime('%H:%M:%S')}"):
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.write(f"**Precio entrada:** ${operacion['precio_entrada']:.4f}")
+                            with col2:
+                                st.write(f"**Cantidad:** {operacion['cantidad_cripto']:.6f}")
+                            with col3:
+                                st.write(f"**Invertido:** ${operacion['cantidad_usdt']:.2f}")
+            
             # Mostrar últimos datos
             st.subheader("📋 Últimos Precios MEXC")
-            # Formatear el DataFrame para mejor visualización
             df_display = df.tail(10).copy()
             df_display['timestamp'] = df_display['timestamp'].dt.strftime('%H:%M:%S')
             st.dataframe(df_display[['timestamp', 'open', 'high', 'low', 'close', 'volume']].round(4), 
@@ -418,11 +513,6 @@ def main():
             st.info("2. El par seleccionado podría no existir en MEXC")
             st.info("3. La API de MEXC podría estar temporalmente saturada")
             st.info("4. Intenta con un intervalo diferente")
-            
-            # Mostrar información de debug
-            st.sidebar.markdown("---")
-            st.sidebar.subheader("🔧 Debug Info")
-            st.sidebar.code(f"Símbolo: {simbolo}\nIntervalo: {intervalo}")
             
     except Exception as e:
         st.error(f"❌ Error en la aplicación: {e}")
