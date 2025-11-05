@@ -9,30 +9,55 @@ from plotly.subplots import make_subplots
 
 # Configurar página de Streamlit
 st.set_page_config(
-    page_title="Bot de Trading FloripaX",
+    page_title="Bot de Trading FloripaX - MEXC",
     page_icon="📈",
     layout="wide"
 )
 
 # Título principal
-st.title("🤖 Bot de Trading FloripaX")
+st.title("🤖 Bot de Trading FloripaX - MEXC")
 st.markdown("---")
 
-# Función para obtener datos de Binance
-def obtener_datos_binance(symbol='BTCUSDT', interval='1m', limit=100):
+# Función para obtener datos de MEXC
+def obtener_datos_mexc(symbol='BTCUSDT', interval='1m', limit=100):
     """
-    Obtener datos de Binance API
+    Obtener datos de MEXC API
     """
     try:
-        url = f"https://api.binance.com/api/v3/klines"
+        # Mapeo de intervalos de Streamlit a MEXC
+        interval_map = {
+            '1m': '1m',
+            '5m': '5m',
+            '15m': '15m',
+            '1h': '1h',
+            '4h': '4h',
+            '1d': '1d'
+        }
+        
+        mexc_interval = interval_map.get(interval, '1m')
+        
+        url = f"https://api.mexc.com/api/v3/klines"
         params = {
             'symbol': symbol,
-            'interval': interval,
+            'interval': mexc_interval,
             'limit': limit
         }
         
-        response = requests.get(url, params=params, timeout=10)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        response = requests.get(url, params=params, headers=headers, timeout=10)
+        
+        if response.status_code != 200:
+            st.error(f"Error API MEXC: {response.status_code}")
+            return None
+            
         data = response.json()
+        
+        if not data or len(data) == 0:
+            st.error("No se recibieron datos de MEXC")
+            return None
         
         # Crear DataFrame
         df = pd.DataFrame(data, columns=[
@@ -49,10 +74,20 @@ def obtener_datos_binance(symbol='BTCUSDT', interval='1m', limit=100):
         # Eliminar filas con NaN
         df = df.dropna()
         
+        if len(df) == 0:
+            st.error("No hay datos válidos después de limpiar NaN")
+            return None
+            
         return df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
         
+    except requests.exceptions.Timeout:
+        st.error("⏰ Timeout conectando a MEXC API")
+        return None
+    except requests.exceptions.ConnectionError:
+        st.error("🔌 Error de conexión con MEXC API")
+        return None
     except Exception as e:
-        st.error(f"Error obteniendo datos: {e}")
+        st.error(f"❌ Error obteniendo datos de MEXC: {e}")
         return None
 
 # Función para calcular RSI de manera robusta
@@ -124,7 +159,6 @@ def obtener_senal_compra_venta(df):
         
         # Obtener últimos valores
         ultimo = df.iloc[-1]
-        penultimo = df.iloc[-2]
         
         # CONDICIONES DE COMPRA
         condicion_compra_rsi = (ultimo['rsi'] < 35)
@@ -132,10 +166,9 @@ def obtener_senal_compra_venta(df):
         condicion_compra_stoch = (ultimo['stoch_k'] < 20 and 
                                 ultimo['stoch_k'] > ultimo['stoch_d'])
         
-        # Señal de compra
-        senal_compra = (condicion_compra_rsi and 
-                       condicion_compra_bb and 
-                       condicion_compra_stoch)
+        # Señal de compra (más estricta - requiere 2 de 3 condiciones)
+        condiciones_compra = [condicion_compra_rsi, condicion_compra_bb, condicion_compra_stoch]
+        senal_compra = sum(condiciones_compra) >= 2
         
         # CONDICIONES DE VENTA
         condicion_venta_rsi = (ultimo['rsi'] > 65)
@@ -143,10 +176,9 @@ def obtener_senal_compra_venta(df):
         condicion_venta_stoch = (ultimo['stoch_k'] > 80 and 
                                ultimo['stoch_k'] < ultimo['stoch_d'])
         
-        # Señal de venta
-        senal_venta = (condicion_venta_rsi and 
-                      condicion_venta_bb and 
-                      condicion_venta_stoch)
+        # Señal de venta (más estricta - requiere 2 de 3 condiciones)
+        condiciones_venta = [condicion_venta_rsi, condicion_venta_bb, condicion_venta_stoch]
+        senal_venta = sum(condiciones_venta) >= 2
         
         # Determinar mensaje de estado
         if senal_compra:
@@ -192,13 +224,26 @@ def crear_grafico(df, senal_compra, senal_venta):
                           name='BB Inferior', line=dict(color='green', width=1, dash='dash')),
                 row=1, col=1
             )
+            
+            # Destacar señales en el gráfico
+            if senal_compra:
+                fig.add_annotation(x=df['timestamp'].iloc[-1], y=df['close'].iloc[-1],
+                                 text="COMPRA", showarrow=True, arrowhead=2,
+                                 bgcolor="green", font=dict(color="white"),
+                                 row=1, col=1)
+            elif senal_venta:
+                fig.add_annotation(x=df['timestamp'].iloc[-1], y=df['close'].iloc[-1],
+                                 text="VENTA", showarrow=True, arrowhead=2,
+                                 bgcolor="red", font=dict(color="white"),
+                                 row=1, col=1)
         
         # Gráfico de RSI
-        fig.add_trace(
-            go.Scatter(x=df['timestamp'], y=df['rsi'], 
-                      name='RSI', line=dict(color='purple', width=1)),
-            row=2, col=1
-        )
+        if 'rsi' in df.columns:
+            fig.add_trace(
+                go.Scatter(x=df['timestamp'], y=df['rsi'], 
+                          name='RSI', line=dict(color='purple', width=1)),
+                row=2, col=1
+            )
         
         # Líneas de referencia RSI
         fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
@@ -209,7 +254,7 @@ def crear_grafico(df, senal_compra, senal_venta):
         fig.update_layout(
             height=600,
             showlegend=True,
-            title_text="Análisis Técnico en Tiempo Real"
+            title_text="Análisis Técnico en Tiempo Real - MEXC"
         )
         
         return fig
@@ -221,12 +266,12 @@ def crear_grafico(df, senal_compra, senal_venta):
 def main():
     try:
         # Sidebar para controles
-        st.sidebar.title("⚙️ Configuración")
+        st.sidebar.title("⚙️ Configuración MEXC")
         
-        # Selector de símbolo
+        # Selector de símbolo (pares populares en MEXC)
         simbolo = st.sidebar.selectbox(
             "Seleccionar Par",
-            ['BTCUSDT', 'ETHUSDT', 'ADAUSDT', 'DOTUSDT', 'LINKUSDT']
+            ['BTCUSDT', 'ETHUSDT', 'ADAUSDT', 'DOTUSDT', 'LINKUSDT', 'ATOMUSDT', 'NEARUSDT', 'APTUSDT']
         )
         
         # Selector de intervalo
@@ -235,13 +280,16 @@ def main():
             ['1m', '5m', '15m', '1h', '4h']
         )
         
+        st.sidebar.markdown("---")
+        st.sidebar.info("**ℹ️ Información MEXC**\n\n- API pública sin necesidad de key\n- Límite: 1200 requests por minuto\n- Datos en tiempo real")
+        
         # Botón para actualizar
-        if st.sidebar.button("🔄 Actualizar Datos"):
+        if st.sidebar.button("🔄 Actualizar Datos MEXC"):
             st.rerun()
         
-        # Obtener datos
-        with st.spinner('Obteniendo datos de Binance...'):
-            df = obtener_datos_binance(symbol=simbolo, interval=intervalo)
+        # Obtener datos de MEXC
+        with st.spinner('Obteniendo datos de MEXC...'):
+            df = obtener_datos_mexc(symbol=simbolo, interval=intervalo)
         
         if df is not None and len(df) > 0:
             # Calcular señales
@@ -274,44 +322,57 @@ def main():
                 st.plotly_chart(fig, use_container_width=True)
             
             # Mostrar datos técnicos
-            st.subheader("📈 Datos Técnicos")
+            st.subheader("📈 Datos Técnicos MEXC")
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
                 if 'rsi' in df.columns:
                     rsi_actual = df['rsi'].iloc[-1]
-                    st.metric("RSI", f"{rsi_actual:.2f}")
+                    color_rsi = "red" if rsi_actual > 70 else "green" if rsi_actual < 30 else "gray"
+                    st.metric("RSI", f"{rsi_actual:.2f}", delta=None, delta_color=color_rsi)
             
             with col2:
                 if 'stoch_k' in df.columns:
                     stoch_actual = df['stoch_k'].iloc[-1]
-                    st.metric("Estocástico K", f"{stoch_actual:.2f}")
+                    color_stoch = "red" if stoch_actual > 80 else "green" if stoch_actual < 20 else "gray"
+                    st.metric("Estocástico K", f"{stoch_actual:.2f}", delta=None, delta_color=color_stoch)
             
             with col3:
                 if 'bb_upper' in df.columns:
                     precio_actual = df['close'].iloc[-1]
                     bb_upper = df['bb_upper'].iloc[-1]
                     bb_lower = df['bb_lower'].iloc[-1]
-                    pos_bb = ((precio_actual - bb_lower) / (bb_upper - bb_lower)) * 100
-                    st.metric("Posición BB", f"{pos_bb:.1f}%")
+                    if bb_upper != bb_lower:  # Evitar división por cero
+                        pos_bb = ((precio_actual - bb_lower) / (bb_upper - bb_lower)) * 100
+                        st.metric("Posición BB", f"{pos_bb:.1f}%")
+                    else:
+                        st.metric("Posición BB", "N/A")
             
             with col4:
                 volumen_actual = df['volume'].iloc[-1]
                 volumen_promedio = df['volume'].tail(20).mean()
-                cambio_volumen = ((volumen_actual - volumen_promedio) / volumen_promedio) * 100
-                st.metric("Volumen vs Promedio", f"{cambio_volumen:.1f}%")
+                if volumen_promedio > 0:
+                    cambio_volumen = ((volumen_actual - volumen_promedio) / volumen_promedio) * 100
+                    st.metric("Volumen vs Promedio", f"{cambio_volumen:.1f}%")
+                else:
+                    st.metric("Volumen", f"{volumen_actual:.2f}")
             
             # Mostrar últimos datos
-            st.subheader("📋 Últimos Precios")
-            st.dataframe(df.tail(10)[['timestamp', 'open', 'high', 'low', 'close', 'volume']], 
+            st.subheader("📋 Últimos Precios MEXC")
+            st.dataframe(df.tail(10)[['timestamp', 'open', 'high', 'low', 'close', 'volume']].round(4), 
                         use_container_width=True)
             
         else:
-            st.error("❌ No se pudieron obtener datos. Revisa tu conexión a internet.")
+            st.error("❌ No se pudieron obtener datos de MEXC.")
+            st.info("💡 Soluciones posibles:")
+            st.info("1. Verifica tu conexión a internet")
+            st.info("2. El par seleccionado podría no existir en MEXC")
+            st.info("3. La API de MEXC podría estar temporalmente saturada")
+            st.info("4. Intenta con un intervalo diferente")
             
     except Exception as e:
         st.error(f"❌ Error en la aplicación: {e}")
-        st.info("💡 Intenta recargar la página o verificar tu conexión a internet.")
+        st.info("💡 Intenta recargar la página")
 
 # Ejecutar la aplicación
 if __name__ == "__main__":
