@@ -18,15 +18,17 @@ st.set_page_config(
 st.title("🤖 Bot de Trading FloripaX - MEXC")
 st.markdown("---")
 
-# Estado inicial del bot (simulado - en producción conectarías con tu broker)
+# Estado inicial del bot
 if 'capital' not in st.session_state:
-    st.session_state.capital = 1000.0  # Capital inicial en USDT
+    st.session_state.capital = 250.0  # Capital inicial en USDT modificado a 250
 if 'operaciones_activas' not in st.session_state:
     st.session_state.operaciones_activas = []
 if 'historial_operaciones' not in st.session_state:
     st.session_state.historial_operaciones = []
+if 'bot_activo' not in st.session_state:
+    st.session_state.bot_activo = False  # Estado del bot (ejecutándose o detenido)
 
-# Función para obtener datos de MEXC (corregida)
+# Función para obtener datos de MEXC
 def obtener_datos_mexc(symbol='BTCUSDT', interval='1m', limit=100):
     """
     Obtener datos de MEXC API con formato correcto
@@ -69,7 +71,6 @@ def obtener_datos_mexc(symbol='BTCUSDT', interval='1m', limit=100):
             return None
         
         # El formato de MEXC tiene 8 columnas:
-        # [timestamp, open, high, low, close, volume, close_time, quote_volume]
         columnas_mexc = [
             'timestamp', 'open', 'high', 'low', 'close', 'volume',
             'close_time', 'quote_volume'
@@ -320,11 +321,32 @@ def crear_grafico(df, senal_compra, senal_venta):
         st.error(f"Error creando gráfico: {e}")
         return None
 
+# Función para alternar el estado del bot
+def toggle_bot():
+    """Alternar entre ejecución y detención del bot"""
+    st.session_state.bot_activo = not st.session_state.bot_activo
+
 # Interfaz principal
 def main():
     try:
         # Sidebar para controles
         st.sidebar.title("⚙️ Configuración MEXC")
+        
+        # Botón de ejecución/detención
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("🎮 Control del Bot")
+        
+        boton_texto = "⏹️ Detener Bot" if st.session_state.bot_activo else "▶️ Ejecutar Bot"
+        boton_color = "secondary" if st.session_state.bot_activo else "primary"
+        
+        if st.sidebar.button(boton_texto, type=boton_color, use_container_width=True):
+            toggle_bot()
+        
+        # Indicador de estado del bot
+        if st.session_state.bot_activo:
+            st.sidebar.success("✅ Bot EJECUTÁNDOSE")
+        else:
+            st.sidebar.warning("⏸️ Bot DETENIDO")
         
         # Selector de símbolo
         simbolo = st.sidebar.selectbox(
@@ -346,7 +368,7 @@ def main():
             "Cantidad por operación (USDT)",
             min_value=10.0,
             max_value=float(st.session_state.capital),
-            value=100.0,
+            value=50.0,
             step=10.0
         )
         
@@ -415,7 +437,8 @@ def main():
                 )
             
             with col4:
-                st.metric("Precio Actual", f"${precio_actual:.4f}")
+                estado_bot = "🟢 EJECUTANDO" if st.session_state.bot_activo else "🔴 DETENIDO"
+                st.metric("Estado del Bot", estado_bot)
             
             # Mostrar estado de señales
             col5, col6 = st.columns(2)
@@ -423,21 +446,29 @@ def main():
             with col5:
                 if senal_compra:
                     st.success("🎯 SEÑAL: COMPRA")
-                    # Ejecutar compra automáticamente si hay señal y capital
-                    if st.session_state.capital >= cantidad_operacion and len(st.session_state.operaciones_activas) < 3:
+                    # Ejecutar compra automáticamente solo si el bot está activo
+                    if st.session_state.bot_activo and st.session_state.capital >= cantidad_operacion and len(st.session_state.operaciones_activas) < 3:
                         if ejecutar_compra(simbolo, precio_actual, cantidad_operacion):
                             st.success(f"✅ Compra ejecutada: {cantidad_operacion} USDT en {simbolo}")
+                    elif st.session_state.bot_activo:
+                        st.info("ℹ️ Señal de compra detectada, pero el bot no puede ejecutar (sin capital o límite alcanzado)")
                 elif senal_venta:
                     st.error("🎯 SEÑAL: VENTA")
-                    # Cerrar operaciones activas si hay señal de venta
-                    for operacion in st.session_state.operaciones_activas[:]:
-                        if operacion['symbol'] == simbolo:
-                            if ejecutar_venta(operacion, precio_actual):
-                                st.success(f"✅ Venta ejecutada para {operacion['symbol']}")
+                    # Cerrar operaciones activas si hay señal de venta y el bot está activo
+                    if st.session_state.bot_activo:
+                        operaciones_cerradas = 0
+                        for operacion in st.session_state.operaciones_activas[:]:
+                            if operacion['symbol'] == simbolo:
+                                if ejecutar_venta(operacion, precio_actual):
+                                    operaciones_cerradas += 1
+                                    st.success(f"✅ Venta ejecutada para {operacion['symbol']}")
+                        if operaciones_cerradas == 0:
+                            st.info("ℹ️ Señal de venta detectada, pero no hay operaciones activas para cerrar")
                 else:
                     st.info("🎯 SEÑAL: NEUTRAL")
             
             with col6:
+                st.metric("Precio Actual", f"${precio_actual:.4f}")
                 st.metric("Última Actualización", 
                          df['timestamp'].iloc[-1].strftime('%H:%M:%S'))
             
@@ -494,17 +525,49 @@ def main():
                             col1, col2, col3 = st.columns(3)
                             with col1:
                                 st.write(f"**Precio entrada:** ${operacion['precio_entrada']:.4f}")
+                                st.write(f"**Precio actual:** ${precio_actual:.4f}")
                             with col2:
                                 st.write(f"**Cantidad:** {operacion['cantidad_cripto']:.6f}")
-                            with col3:
                                 st.write(f"**Invertido:** ${operacion['cantidad_usdt']:.2f}")
+                            with col3:
+                                ganancia_actual = (precio_actual - operacion['precio_entrada']) * operacion['cantidad_cripto']
+                                porcentaje_ganancia = (ganancia_actual / operacion['cantidad_usdt']) * 100
+                                color_ganancia = "green" if ganancia_actual >= 0 else "red"
+                                st.write(f"**Ganancia actual:** <span style='color:{color_ganancia}'>${ganancia_actual:.2f} ({porcentaje_ganancia:.1f}%)</span>", 
+                                        unsafe_allow_html=True)
             
-            # Mostrar últimos datos
-            st.subheader("📋 Últimos Precios MEXC")
-            df_display = df.tail(10).copy()
-            df_display['timestamp'] = df_display['timestamp'].dt.strftime('%H:%M:%S')
-            st.dataframe(df_display[['timestamp', 'open', 'high', 'low', 'close', 'volume']].round(4), 
-                        use_container_width=True)
+            # Mostrar historial de operaciones (reemplaza "Últimos Precios MEXC")
+            st.subheader("📋 Historial de Operaciones del Bot")
+            if st.session_state.historial_operaciones:
+                # Crear DataFrame del historial
+                historial_df = pd.DataFrame(st.session_state.historial_operaciones)
+                historial_df['timestamp'] = historial_df['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
+                historial_df['timestamp_cierre'] = historial_df['timestamp_cierre'].dt.strftime('%Y-%m-%d %H:%M:%S')
+                
+                # Mostrar tabla formateada
+                st.dataframe(
+                    historial_df[['symbol', 'tipo', 'precio_entrada', 'precio_salida', 
+                                 'ganancia_perdida', 'timestamp', 'timestamp_cierre']].round(4),
+                    use_container_width=True
+                )
+                
+                # Resumen del historial
+                st.subheader("📊 Resumen del Historial")
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    total_operaciones = len(st.session_state.historial_operaciones)
+                    st.metric("Total Operaciones", total_operaciones)
+                with col2:
+                    operaciones_ganadoras = len([op for op in st.session_state.historial_operaciones if op['ganancia_perdida'] > 0])
+                    st.metric("Operaciones Ganadoras", operaciones_ganadoras)
+                with col3:
+                    if total_operaciones > 0:
+                        tasa_exito = (operaciones_ganadoras / total_operaciones) * 100
+                        st.metric("Tasa de Éxito", f"{tasa_exito:.1f}%")
+                    else:
+                        st.metric("Tasa de Éxito", "0%")
+            else:
+                st.info("📝 Aún no hay operaciones en el historial")
             
         else:
             st.error("❌ No se pudieron obtener datos de MEXC.")
