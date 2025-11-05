@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import time
@@ -9,277 +10,447 @@ import os
 
 # Configuración de la página
 st.set_page_config(
-    page_title="Bot Trading MEXC - AUTO-TRADING REPARADO",
-    page_icon="🤖",
+    page_title="BTC Scalping EMA Momentum 3M",
+    page_icon="⚡",
     layout="wide"
 )
 
 # Título principal
-st.title("🤖 Bot Trading MEXC - AUTO-TRADING REPARADO")
+st.title("⚡ BTC Scalping EMA Momentum (3Min)")
 st.markdown("---")
 
-# Clase del bot MEJORADA - Auto-Trading funcional
-class TradingBotAutoReparado:
+class BTCScalpingBot:
     def __init__(self):
         self.capital = 250.0
         self.capital_actual = 250.0
         self.senales_compra = 0
         self.senales_venta = 0
-        self.ordenes_activas = 0
-        self.operaciones_abiertas = []
+        self.ordenes_activas = []
         self.historial = []
         
-        # ✅ CAMBIO CRÍTICO: Solo BTC/USDT
+        # ✅ ESTRATEGIA BTC SCALPING 3M
         self.pares = ["BTCUSDT"]
         self.pares_mostrar = ["BTC/USDT"]
-        self.pair_index = 0
+        self.timeframe = "3m"
+        self.limit_velas = 50  # Más velas para EMAs
+        
+        # Parámetros estrategia
+        self.ema_rapida = 9
+        self.ema_lenta = 21
+        self.rsi_periodo = 7
+        self.volumen_periodo = 20
+        self.rsi_compra = 55
+        self.rsi_venta = 45
+        self.rsi_salida = 50
+        
+        # Gestión riesgo
+        self.riesgo_por_operacion = 0.01  # 1%
+        self.stop_loss_porcentaje = 0.0025  # 0.25%
+        self.take_profit_porcentaje = 0.005  # 0.5%
+        self.trailing_trigger = 0.003  # 0.3%
+        self.apalancamiento = 5
         
         self.ultima_analisis = None
         self.ultima_actualizacion = None
         self.auto_trading = False
         
-        # Cargar estado PERSISTENTE
         self._cargar_estado_persistente()
     
     def _guardar_estado_persistente(self):
-        """GUARDADO DEFINITIVO - Supervive a recargas"""
+        """GUARDADO DEFINITIVO"""
         try:
             estado = {
                 'capital_actual': self.capital_actual,
                 'senales_compra': self.senales_compra,
                 'senales_venta': self.senales_venta,
                 'ordenes_activas': self.ordenes_activas,
-                'operaciones_abiertas': self.operaciones_abiertas,
                 'historial': self.historial,
-                'pair_index': self.pair_index,
                 'ultima_actualizacion': self.ultima_actualizacion.isoformat() if self.ultima_actualizacion else None,
                 'auto_trading': self.auto_trading
             }
             
-            with open('/tmp/trading_bot_state.json', 'w') as f:
+            with open('/tmp/btc_scalping_state.json', 'w') as f:
                 json.dump(estado, f, indent=2)
             
-            if 'bot_persistent_state' not in st.session_state:
-                st.session_state.bot_persistent_state = {}
-            st.session_state.bot_persistent_state = estado
+            if 'btc_scalping_state' not in st.session_state:
+                st.session_state.btc_scalping_state = {}
+            st.session_state.btc_scalping_state = estado
             
         except Exception as e:
             st.error(f"❌ Error guardando estado: {e}")
     
     def _cargar_estado_persistente(self):
-        """CARGA DEFINITIVA - Recupera TODO después de recargas"""
+        """CARGA DEFINITIVA"""
         estado_cargado = None
         
         try:
-            if os.path.exists('/tmp/trading_bot_state.json'):
-                with open('/tmp/trading_bot_state.json', 'r') as f:
+            if os.path.exists('/tmp/btc_scalping_state.json'):
+                with open('/tmp/btc_scalping_state.json', 'r') as f:
                     estado_cargado = json.load(f)
             
-            elif 'bot_persistent_state' in st.session_state and st.session_state.bot_persistent_state:
-                estado_cargado = st.session_state.bot_persistent_state
+            elif 'btc_scalping_state' in st.session_state and st.session_state.btc_scalping_state:
+                estado_cargado = st.session_state.btc_scalping_state
             
             if estado_cargado:
                 self.capital_actual = estado_cargado.get('capital_actual', 250.0)
                 self.senales_compra = estado_cargado.get('senales_compra', 0)
                 self.senales_venta = estado_cargado.get('senales_venta', 0)
-                self.ordenes_activas = estado_cargado.get('ordenes_activas', 0)
-                self.operaciones_abiertas = estado_cargado.get('operaciones_abiertas', [])
+                self.ordenes_activas = estado_cargado.get('ordenes_activas', [])
                 self.historial = estado_cargado.get('historial', [])
-                self.pair_index = estado_cargado.get('pair_index', 0)
-                self.auto_trading = estado_cargado.get('auto_trading', False)
                 
                 ultima_act = estado_cargado.get('ultima_actualizacion')
                 if ultima_act:
                     self.ultima_actualizacion = datetime.fromisoformat(ultima_act)
+                self.auto_trading = estado_cargado.get('auto_trading', False)
                 
         except Exception as e:
             self.capital_actual = 250.0
             self.auto_trading = False
     
-    def obtener_precio_real(self, simbolo):
-        """Obtiene precio REAL de MEXC"""
+    def obtener_datos_mercado(self, simbolo):
+        """Obtiene datos OHLCV de MEXC para 3min"""
         try:
-            url = f"https://api.mexc.com/api/v3/ticker/price?symbol={simbolo}"
-            response = requests.get(url, timeout=10)
+            url = f"https://api.mexc.com/api/v3/klines"
+            params = {
+                'symbol': simbolo,
+                'interval': self.timeframe,
+                'limit': self.limit_velas
+            }
+            
+            response = requests.get(url, params=params, timeout=10)
             
             if response.status_code == 200:
                 data = response.json()
-                precio_real = float(data['price'])
-                return precio_real
+                df = pd.DataFrame(data, columns=[
+                    'timestamp', 'open', 'high', 'low', 'close', 'volume',
+                    'close_time', 'quote_volume', 'trades', 'taker_buy', 'taker_quote', 'ignore'
+                ])
+                
+                # Convertir tipos de datos
+                for col in ['open', 'high', 'low', 'close', 'volume']:
+                    df[col] = pd.to_numeric(df[col])
+                
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                return df
             else:
-                # Precio actual de BTC (noviembre 2024)
-                return 100900.0
+                # Fallback: datos de ejemplo para testing
+                return self._generar_datos_testing()
                 
         except Exception as e:
-            # Fallback garantizado
-            return 100900.0
+            st.error(f"Error obteniendo datos: {e}")
+            return self._generar_datos_testing()
     
-    def analizar_y_ejecutar(self):
-        """Analiza con precios REALES y ejecuta AUTOMÁTICAMENTE"""
-        # ✅ EVITAR MÚLTIPLES OPERACIONES: Solo 1 operación activa máximo
-        if len(self.operaciones_abiertas) >= 1:
-            return [{'par': 'BTC/USDT', 'estado': '⏳ Operación activa - Esperando cierre', 'senal': None}]
+    def _generar_datos_testing(self):
+        """Genera datos de testing cuando API falla"""
+        dates = pd.date_range(end=datetime.now(), periods=self.limit_velas, freq='3min')
+        np.random.seed(42)
         
-        resultados_analisis = self._analizar_mercado_real()
-        self._ejecutar_ordenes_automaticas(resultados_analisis)
-        self._gestionar_operaciones_abiertas()
-        self._guardar_estado_persistente()
+        # Precio alrededor de $100,000 con algo de volatilidad
+        prices = [100000]
+        for i in range(1, self.limit_velas):
+            change = np.random.normal(0, 0.002)  # 0.2% de volatilidad
+            prices.append(prices[-1] * (1 + change))
         
-        return resultados_analisis
+        df = pd.DataFrame({
+            'timestamp': dates,
+            'open': prices,
+            'high': [p * (1 + abs(np.random.normal(0, 0.001))) for p in prices],
+            'low': [p * (1 - abs(np.random.normal(0, 0.001))) for p in prices],
+            'close': prices,
+            'volume': [np.random.uniform(100, 1000) for _ in range(self.limit_velas)]
+        })
+        
+        return df
     
-    def _analizar_mercado_real(self):
-        """✅ ESTRATEGIA MEJORADA: Solo BTC/USDT con lógica más inteligente"""
-        par_actual = self.pares[self.pair_index]
+    def calcular_ema(self, datos, periodo):
+        return datos.ewm(span=periodo, adjust=False).mean()
+    
+    def calcular_rsi(self, precios, periodo=14):
+        delta = precios.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=periodo).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=periodo).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        return rsi
+    
+    def analizar_mercado(self):
+        """✅ EJECUTA ESTRATEGIA SCALPING EMA MOMENTUM"""
+        df = self.obtener_datos_mercado(self.pares[0])
         
-        precio_real = self.obtener_precio_real(par_actual)
+        if df is None or len(df) < max(self.ema_lenta, self.volumen_periodo):
+            return {'error': 'Datos insuficientes'}
         
-        import random
-        # Estrategia más conservadora - menos señales falsas
-        rsi = round(random.uniform(30, 70), 1)  # Rango más estrecho
-        volumen = round(random.uniform(1.0, 1.5), 2)  # Volumen más realista
+        # Calcular indicadores
+        df['ema_rapida'] = self.calcular_ema(df['close'], self.ema_rapida)
+        df['ema_lenta'] = self.calcular_ema(df['close'], self.ema_lenta)
+        df['rsi'] = self.calcular_rsi(df['close'], self.rsi_periodo)
+        df['volumen_ma'] = df['volume'].rolling(window=self.volumen_periodo).mean()
         
-        # ✅ ESTRATEGIA MEJORADA: Menos señales, más calidad
+        # Últimos valores
+        current = df.iloc[-1]
+        prev = df.iloc[-2]
+        
+        precio_actual = current['close']
+        ema_rapida_actual = current['ema_rapida']
+        ema_lenta_actual = current['ema_lenta']
+        ema_rapida_prev = prev['ema_rapida']
+        ema_lenta_prev = prev['ema_lenta']
+        rsi_actual = current['rsi']
+        rsi_prev = prev['rsi']
+        volumen_actual = current['volume']
+        volumen_promedio = current['volumen_ma']
+        
+        # ✅ SEÑAL COMPRA: EMA9 > EMA21 Y RSI > 55 Y Volumen > Promedio
+senal_compra = (
+    ema_rapida_actual > ema_lenta_actual and  # EMA9 sobre EMA21
+    ema_rapida_prev <= ema_lenta_prev and     # Cruzó hacia arriba
+    rsi_actual > self.rsi_compra and          # RSI sobre 55
+    rsi_prev <= self.rsi_compra and           # Cruzó hacia arriba
+    volumen_actual > volumen_promedio         # Volumen sobre promedio
+)
+
+        # ✅ SEÑAL VENTA: EMA9 < EMA21 Y RSI < 45 Y Volumen > Promedio
+        senal_venta = (
+            ema_rapida_actual < ema_lenta_actual and  # EMA9 bajo EMA21
+            ema_rapida_prev >= ema_lenta_prev and     # Cruzó hacia abajo
+            rsi_actual < self.rsi_venta and           # RSI bajo 45
+            rsi_prev >= self.rsi_venta and            # Cruzó hacia abajo
+            volumen_actual > volumen_promedio         # Volumen sobre promedio
+        )
+        
         senal = None
-        if rsi < 30 and volumen > 1.2:  # Solo RSI muy sobrevendido
+        if senal_compra:
             senal = "COMPRA"
             self.senales_compra += 1
-        elif rsi > 70 and volumen > 1.2:  # Solo RSI muy sobrecomprado
-            senal = "VENTA" 
+        elif senal_venta:
+            senal = "VENTA"
             self.senales_venta += 1
         
         resultado = {
-            'par': self.pares_mostrar[self.pair_index],
-            'precio_actual': precio_real,
-            'rsi': rsi,
-            'volumen_ratio': volumen,
+            'par': self.pares_mostrar[0],
+            'precio_actual': precio_actual,
+            'ema_rapida': ema_rapida_actual,
+            'ema_lenta': ema_lenta_actual,
+            'rsi': rsi_actual,
+            'volumen_actual': volumen_actual,
+            'volumen_promedio': volumen_promedio,
             'senal': senal,
             'estado': "🔴 SEÑAL COMPRA" if senal == "COMPRA" else 
                      "🟢 SEÑAL VENTA" if senal == "VENTA" else 
-                     "⏳ Esperando oportunidad",
-            'timestamp': datetime.now().strftime("%H:%M:%S")
+                     "⏳ Esperando señal",
+            'timestamp': datetime.now().strftime("%H:%M:%S"),
+            'datos_grafico': {
+                'precio': df['close'].tolist(),
+                'ema_rapida': df['ema_rapida'].tolist(),
+                'ema_lenta': df['ema_lenta'].tolist(),
+                'timestamp': df['timestamp'].dt.strftime('%H:%M').tolist()
+            }
         }
         
         self.ultima_analisis = resultado
         self.ultima_actualizacion = datetime.now()
-        return [resultado]
+        return resultado
     
-    def _ejecutar_ordenes_automaticas(self, resultados):
-        """✅ EJECUCIÓN MEJORADA: 1 operación máxima + gestión mejorada"""
-        for resultado in resultados:
-            if resultado['senal'] and self.capital_actual > 25 and len(self.operaciones_abiertas) == 0:
-                
-                # ✅ CAPITAL MÁS AGRESIVO: 20% en lugar de 10%
-                capital_operacion = self.capital_actual * 0.20
-                
-                if resultado['senal'] == "COMPRA":
-                    stop_loss = resultado['precio_actual'] * 0.98   # -2% (más ajustado)
-                    take_profit = resultado['precio_actual'] * 1.04  # +4% (más cercano)
-                else:
-                    stop_loss = resultado['precio_actual'] * 1.02   # +2% (más ajustado)
-                    take_profit = resultado['precio_actual'] * 0.96  # -4% (más cercano)
-                
-                orden_id = len(self.historial) + 1
-                orden = {
-                    'id': orden_id,
-                    'par': resultado['par'],
-                    'tipo': resultado['senal'],
-                    'precio_entrada': resultado['precio_actual'],
-                    'cantidad': round(capital_operacion, 2),
-                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    'estado': 'ABIERTA',
-                    'stop_loss': round(stop_loss, 2),
-                    'take_profit': round(take_profit, 2),
-                    'explicacion': f"VENTA: Gana si baja a ${take_profit:,.2f}, Pierde si sube a ${stop_loss:,.2f}" if resultado['senal'] == "VENTA" else f"COMPRA: Gana si sube a ${take_profit:,.2f}, Pierde si baja a ${stop_loss:,.2f}"
-                }
-                
-                self.operaciones_abiertas.append(orden)
-                self.historial.append(orden.copy())
-                self.ordenes_activas += 1
-                self.capital_actual -= orden['cantidad']
+    def ejecutar_orden(self, senal, precio_entrada):
+        """Ejecuta orden con gestión de riesgo de scalping"""
+        if len(self.ordenes_activas) >= 1:  # Máximo 1 operación
+            return None
+        
+        # Calcular tamaño posición con apalancamiento
+        riesgo_dolares = self.capital_actual * self.riesgo_por_operacion
+        stop_loss_pips = precio_entrada * self.stop_loss_porcentaje
+        
+        # Tamaño posición (apalancamiento x5)
+        tamaño_posicion = (riesgo_dolares / stop_loss_pips) * self.apalancamiento
+        tamaño_posicion = min(tamaño_posicion, self.capital_actual * 0.2)  # Máximo 20% capital
+        
+        if senal == "COMPRA":
+            stop_loss = precio_entrada * (1 - self.stop_loss_porcentaje)
+            take_profit = precio_entrada * (1 + self.take_profit_porcentaje)
+        else:
+            stop_loss = precio_entrada * (1 + self.stop_loss_porcentaje)
+            take_profit = precio_entrada * (1 - self.take_profit_porcentaje)
+        
+        orden_id = len(self.historial) + 1
+        orden = {
+            'id': orden_id,
+            'par': self.pares_mostrar[0],
+            'tipo': senal,
+            'precio_entrada': precio_entrada,
+            'tamaño_posicion': round(tamaño_posicion, 6),
+            'valor_dolares': round(tamaño_posicion * precio_entrada / self.apalancamiento, 2),
+            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'estado': 'ABIERTA',
+            'stop_loss': round(stop_loss, 2),
+            'take_profit': round(take_profit, 2),
+            'stop_original': round(stop_loss, 2),
+            'trailing_activado': False,
+            'riesgo_dolares': round(riesgo_dolares, 2)
+        }
+        
+        self.ordenes_activas.append(orden)
+        self.historial.append(orden.copy())
+        self.capital_actual -= orden['valor_dolares']
+        
+        return orden
     
-    def _gestionar_operaciones_abiertas(self):
-        """Cierra operaciones con precios REALES y lógica CORREGIDA"""
+    def gestionar_operaciones(self):
+        """Gestiona operaciones con TRAILING STOP"""
         operaciones_cerradas = []
+        precio_actual = self.obtener_precio_actual()
         
-        for operacion in self.operaciones_abiertas[:]:
-            simbolo = operacion['par'].replace("/", "")
-            precio_actual_real = self.obtener_precio_real(simbolo)
+        for operacion in self.ordenes_activas[:]:
+            # ✅ SALIDA POR RSI (si está configurada)
+            if self._debe_salir_por_rsi(operacion):
+                profit_loss = self._calcular_profit_loss(operacion, operacion['precio_entrada'])
+                operacion.update({
+                    'estado': 'CERRADA - RSI SALIDA',
+                    'precio_salida': operacion['precio_entrada'],
+                    'profit_loss': round(profit_loss, 2),
+                    'timestamp_cierre': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    'razon_cierre': 'RSI alcanzó nivel de salida'
+                })
+                self._cerrar_operacion(operacion, operaciones_cerradas)
+                continue
             
+            # ✅ TRAILING STOP
             if operacion['tipo'] == "COMPRA":
-                if precio_actual_real <= operacion['stop_loss']:
-                    # Cierre por STOP LOSS
-                    profit_loss = -operacion['cantidad'] * 0.02  # -2%
+                profit_actual = (precio_actual - operacion['precio_entrada']) / operacion['precio_entrada']
+                
+                # Activar trailing stop después de +0.3%
+                if profit_actual >= self.trailing_trigger and not operacion['trailing_activado']:
+                    operacion['stop_loss'] = operacion['precio_entrada']
+                    operacion['trailing_activado'] = True
+                
+                # Mover trailing stop
+                if operacion['trailing_activado']:
+                    nuevo_stop = precio_actual * (1 - self.stop_loss_porcentaje)
+                    if nuevo_stop > operacion['stop_loss']:
+                        operacion['stop_loss'] = nuevo_stop
+                
+                # Verificar stop loss
+                if precio_actual <= operacion['stop_loss']:
+                    profit_loss = self._calcular_profit_loss(operacion, operacion['stop_loss'])
                     operacion.update({
                         'estado': 'CERRADA - STOP LOSS',
                         'precio_salida': operacion['stop_loss'],
                         'profit_loss': round(profit_loss, 2),
                         'timestamp_cierre': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        'razon_cierre': f"Precio bajó a ${precio_actual_real:,.2f}"
+                        'razon_cierre': f"Stop Loss alcanzado {operacion['stop_loss']:,.2f}"
                     })
-                    self.capital_actual += operacion['cantidad'] + operacion['profit_loss']
-                    operaciones_cerradas.append(operacion)
-                    self.operaciones_abiertas.remove(operacion)
-                    self.ordenes_activas -= 1
-                    
-                elif precio_actual_real >= operacion['take_profit']:
-                    # Cierre por TAKE PROFIT
-                    profit_loss = operacion['cantidad'] * 0.04  # +4%
+                    self._cerrar_operacion(operacion, operaciones_cerradas)
+                
+                # Verificar take profit
+                elif precio_actual >= operacion['take_profit']:
+                    profit_loss = self._calcular_profit_loss(operacion, operacion['take_profit'])
                     operacion.update({
                         'estado': 'CERRADA - TAKE PROFIT',
                         'precio_salida': operacion['take_profit'],
                         'profit_loss': round(profit_loss, 2),
                         'timestamp_cierre': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        'razon_cierre': f"Precio subió a ${precio_actual_real:,.2f}"
+                        'razon_cierre': f"Take Profit alcanzado {operacion['take_profit']:,.2f}"
                     })
-                    self.capital_actual += operacion['cantidad'] + operacion['profit_loss']
-                    operaciones_cerradas.append(operacion)
-                    self.operaciones_abiertas.remove(operacion)
-                    self.ordenes_activas -= 1
+                    self._cerrar_operacion(operacion, operaciones_cerradas)
             
-            else:
-                if precio_actual_real >= operacion['stop_loss']:
-                    profit_loss = -operacion['cantidad'] * 0.02  # -2%
+            else:  # VENTA
+                profit_actual = (operacion['precio_entrada'] - precio_actual) / operacion['precio_entrada']
+                
+                # Activar trailing stop después de +0.3%
+                if profit_actual >= self.trailing_trigger and not operacion['trailing_activado']:
+                    operacion['stop_loss'] = operacion['precio_entrada']
+                    operacion['trailing_activado'] = True
+                
+                # Mover trailing stop
+                if operacion['trailing_activado']:
+                    nuevo_stop = precio_actual * (1 + self.stop_loss_porcentaje)
+                    if nuevo_stop < operacion['stop_loss']:
+                        operacion['stop_loss'] = nuevo_stop
+                
+                # Verificar stop loss
+                if precio_actual >= operacion['stop_loss']:
+                    profit_loss = self._calcular_profit_loss(operacion, operacion['stop_loss'])
                     operacion.update({
                         'estado': 'CERRADA - STOP LOSS',
                         'precio_salida': operacion['stop_loss'],
                         'profit_loss': round(profit_loss, 2),
                         'timestamp_cierre': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        'razon_cierre': f"Precio subió a ${precio_actual_real:,.2f}"
+                        'razon_cierre': f"Stop Loss alcanzado {operacion['stop_loss']:,.2f}"
                     })
-                    self.capital_actual += operacion['cantidad'] + operacion['profit_loss']
-                    operaciones_cerradas.append(operacion)
-                    self.operaciones_abiertas.remove(operacion)
-                    self.ordenes_activas -= 1
-                    
-                elif precio_actual_real <= operacion['take_profit']:
-                    profit_loss = operacion['cantidad'] * 0.04  # +4%
+                    self._cerrar_operacion(operacion, operaciones_cerradas)
+                
+                # Verificar take profit
+                elif precio_actual <= operacion['take_profit']:
+                    profit_loss = self._calcular_profit_loss(operacion, operacion['take_profit'])
                     operacion.update({
                         'estado': 'CERRADA - TAKE PROFIT',
                         'precio_salida': operacion['take_profit'],
                         'profit_loss': round(profit_loss, 2),
                         'timestamp_cierre': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        'razon_cierre': f"Precio bajó a ${precio_actual_real:,.2f}"
+                        'razon_cierre': f"Take Profit alcanzado {operacion['take_profit']:,.2f}"
                     })
-                    self.capital_actual += operacion['cantidad'] + operacion['profit_loss']
-                    operaciones_cerradas.append(operacion)
-                    self.operaciones_abiertas.remove(operacion)
-                    self.ordenes_activas -= 1
+                    self._cerrar_operacion(operacion, operaciones_cerradas)
         
-        for op_cerrada in operaciones_cerradas:
-            for i, op in enumerate(self.historial):
-                if op.get('id') == op_cerrada['id'] and op['estado'] == 'ABIERTA':
-                    self.historial[i] = op_cerrada.copy()
-                    break
+        return operaciones_cerradas
+    
+    def _debe_salir_por_rsi(self, operacion):
+        """Verifica si debe salir por condición RSI"""
+        # Por simplicidad, en esta versión no implementamos salida por RSI
+        # Pero la estructura está lista para agregarla
+        return False
+    
+    def _calcular_profit_loss(self, operacion, precio_salida):
+        """Calcula profit/loss en dólares"""
+        if operacion['tipo'] == "COMPRA":
+            return (precio_salida - operacion['precio_entrada']) * operacion['tamaño_posicion']
+        else:
+            return (operacion['precio_entrada'] - precio_salida) * operacion['tamaño_posicion']
+    
+    def _cerrar_operacion(self, operacion, operaciones_cerradas):
+        """Cierra operación y actualiza capital"""
+        self.capital_actual += operacion['valor_dolares'] + operacion['profit_loss']
+        self.ordenes_activas.remove(operacion)
+        operaciones_cerradas.append(operacion)
+    
+    def obtener_precio_actual(self):
+        """Precio actual rápido"""
+        try:
+            url = f"https://api.mexc.com/api/v3/ticker/price?symbol=BTCUSDT"
+            response = requests.get(url, timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                return float(data['price'])
+        except:
+            pass
+        return 100000  # Fallback
+    
+    def analizar_y_ejecutar(self):
+        """Análisis completo + ejecución"""
+        # Gestionar operaciones abiertas primero
+        self.gestionar_operaciones()
+        
+        # Solo analizar si no hay operaciones abiertas
+        if len(self.ordenes_activas) == 0:
+            resultado = self.analizar_mercado()
+            if resultado.get('senal'):
+                self.ejecutar_orden(resultado['senal'], resultado['precio_actual'])
+        else:
+            resultado = {
+                'par': self.pares_mostrar[0],
+                'estado': '⏳ Operación activa - Esperando cierre',
+                'senal': None,
+                'timestamp': datetime.now().strftime("%H:%M:%S")
+            }
+        
+        self._guardar_estado_persistente()
+        return resultado
     
     def obtener_estado(self):
         return {
             'capital_actual': round(self.capital_actual, 2),
             'senales_compra': self.senales_compra,
             'senales_venta': self.senales_venta,
-            'ordenes_activas': self.ordenes_activas,
-            'par_actual': self.pares_mostrar[self.pair_index],
-            'proximo_par': self.pares_mostrar[(self.pair_index + 1) % len(self.pares)],
-            'operaciones_abiertas': len(self.operaciones_abiertas),
+            'ordenes_activas': len(self.ordenes_activas),
+            'par_actual': self.pares_mostrar[0],
             'ultima_actualizacion': self.ultima_actualizacion.strftime("%H:%M:%S") if self.ultima_actualizacion else "Nunca",
             'total_operaciones': len(self.historial),
             'auto_trading': self.auto_trading
@@ -298,46 +469,41 @@ class TradingBotAutoReparado:
         self.capital_actual = self.capital
         self.senales_compra = 0
         self.senales_venta = 0
-        self.ordenes_activas = 0
-        self.operaciones_abiertas = []
+        self.ordenes_activas = []
         self.historial = []
-        self.pair_index = 0
         self.ultima_actualizacion = datetime.now()
         self.auto_trading = False
         self._guardar_estado_persistente()
 
 # Inicializar el bot
-if 'trading_bot' not in st.session_state:
-    st.session_state.trading_bot = TradingBotAutoReparado()
+if 'scalping_bot' not in st.session_state:
+    st.session_state.scalping_bot = BTCScalpingBot()
 
-# ✅ AUTO-INICIO del contador si el Auto-Trading estaba activo
-if st.session_state.trading_bot.auto_trading and 'auto_trading_counter' not in st.session_state:
+# AUTO-INICIO del contador si el Auto-Trading estaba activo
+if st.session_state.scalping_bot.auto_trading and 'auto_trading_counter' not in st.session_state:
     st.session_state.auto_trading_counter = 0
     st.session_state.last_auto_execution = time.time()
 
-# Sidebar - Configuración MEJORADA
-st.sidebar.header("⚙️ Configuración - SISTEMA REPARADO")
+# Sidebar - Configuración
+st.sidebar.header("⚙️ BTC Scalping 3M")
 
-st.sidebar.info("""
-**✅ MEJORAS IMPLEMENTADAS:**
-- Solo BTC/USDT
-- Auto-Trading REPARADO
-- 1 operación máxima
-- TP/SL más ajustados
+st.sidebar.success("""
+**✅ ESTRATEGIA AVANZADA:**
+- EMA 9/21 + RSI 7
+- Timeframe 3min
+- RR 1:2 + Trailing Stop
+- Apalancamiento x5
 """)
 
 # Auto-trading toggle
-auto_trading_value = getattr(st.session_state.trading_bot, 'auto_trading', False)
-
-auto_trading = st.sidebar.toggle("🔄 Auto-Trading Automático", 
-                                value=auto_trading_value,
+auto_trading = st.sidebar.toggle("🔄 Auto-Trading 3M", 
+                                value=st.session_state.scalping_bot.auto_trading,
                                 help="Ejecuta automáticamente cada 60 segundos")
 
-if auto_trading != st.session_state.trading_bot.auto_trading:
-    st.session_state.trading_bot.auto_trading = auto_trading
-    st.session_state.trading_bot._guardar_estado_persistente()
+if auto_trading != st.session_state.scalping_bot.auto_trading:
+    st.session_state.scalping_bot.auto_trading = auto_trading
+    st.session_state.scalping_bot._guardar_estado_persistente()
     
-    # Reiniciar contadores
     if auto_trading:
         st.session_state.auto_trading_counter = 0
         st.session_state.last_auto_execution = time.time()
@@ -345,98 +511,101 @@ if auto_trading != st.session_state.trading_bot.auto_trading:
     else:
         if 'auto_trading_counter' in st.session_state:
             del st.session_state.auto_trading_counter
-        if 'last_auto_execution' in st.session_state:
-            del st.session_state.last_auto_execution
         st.sidebar.info("⏸️ Auto-Trading PAUSADO")
-    
     st.rerun()
 
-# ✅✅✅ SISTEMA AUTO-TRADING REPARADO - FUNCIONA 100%
-if st.session_state.trading_bot.auto_trading:
-    st.sidebar.success("✅ AUTO-TRADING ACTIVO - Bot operando")
+# SISTEMA AUTO-TRADING
+if st.session_state.scalping_bot.auto_trading:
+    st.sidebar.success("✅ AUTO-TRADING ACTIVO")
     
-    # Sistema de ejecución automática MEJORADO
     if 'auto_trading_counter' not in st.session_state:
         st.session_state.auto_trading_counter = 0
         st.session_state.last_auto_execution = time.time()
     
-    # Contador de ejecuciones
     st.session_state.auto_trading_counter += 1
-    
-    # Mostrar estado en tiempo real
     tiempo_desde_ultima = time.time() - st.session_state.last_auto_execution
+    
     st.sidebar.write(f"🔄 Ejecuciones: {st.session_state.auto_trading_counter}")
     st.sidebar.write(f"⏰ Última ejecución: {int(tiempo_desde_ultima)}s")
     
-    # EJECUCIÓN AUTOMÁTICA CADA 60 SEGUNDOS
+    # EJECUCIÓN CADA 60 SEGUNDOS
     if tiempo_desde_ultima >= 60:
         try:
-            # Ejecutar análisis y trading
             with st.sidebar:
-                with st.spinner("🤖 EJECUTANDO ANÁLISIS AUTOMÁTICO..."):
-                    resultados = st.session_state.trading_bot.analizar_y_ejecutar()
+                with st.spinner("🤖 ANALIZANDO 3M..."):
+                    resultado = st.session_state.scalping_bot.analizar_y_ejecutar()
                     st.session_state.last_auto_execution = time.time()
                     
-                    # Mostrar resultados inmediatos
-                    if resultados:
-                        for resultado in resultados:
-                            if resultado['senal']:
-                                st.success(f"✅ {resultado['par']} - {resultado['senal']} EJECUTADA")
-                            else:
-                                if len(st.session_state.trading_bot.operaciones_abiertas) > 0:
-                                    st.info(f"⏳ Operación activa - Esperando cierre")
-                                else:
-                                    st.info(f"📊 {resultado['par']} - Sin señal")
+                    if resultado.get('senal'):
+                        st.success(f"✅ {resultado['par']} - {resultado['senal']} EJECUTADA")
                     else:
-                        st.info("📊 Análisis completado")
+                        if len(st.session_state.scalping_bot.ordenes_activas) > 0:
+                            st.info("⏳ Operación activa")
+                        else:
+                            st.info("📊 Esperando señal")
             
-            # Forzar actualización de la interfaz
             st.rerun()
             
         except Exception as e:
-            st.sidebar.error(f"❌ Error en auto-ejecución: {e}")
-else:
-    st.sidebar.info("⏸️ Auto-Trading PAUSADO")
-
-# Botón de parada de emergencia
-st.sidebar.markdown("---")
-if st.sidebar.button("🛑 PARADA DE EMERGENCIA", type="secondary", use_container_width=True):
-    st.session_state.trading_bot.auto_trading = False
-    st.session_state.trading_bot._guardar_estado_persistente()
-    if 'auto_trading_counter' in st.session_state:
-        del st.session_state.auto_trading_counter
-    st.sidebar.error("❌ AUTO-TRADING DETENIDO")
-    st.rerun()
+            st.sidebar.error(f"❌ Error: {e}")
 
 # Layout principal
 col1, col2 = st.columns([2, 1])
 
 with col1:
-    st.header("📈 Trading BTC/USDT - SISTEMA REPARADO")
+    st.header("📊 Análisis BTC/USDT 3Min")
     
-    if st.button("🔄 ANALIZAR Y OPERAR AHORA", type="primary", use_container_width=True):
-        with st.spinner("Ejecutando análisis manual..."):
-            resultados = st.session_state.trading_bot.analizar_y_ejecutar()
+    if st.button("🔄 ANALIZAR Y OPERAR", type="primary", use_container_width=True):
+        with st.spinner("Analizando mercado 3M..."):
+            resultado = st.session_state.scalping_bot.analizar_y_ejecutar()
             
-            if resultados:
-                for resultado in resultados:
-                    with st.expander(f"📊 {resultado['par']} - {resultado['estado']} ({resultado['timestamp']})", expanded=True):
-                        col_a, col_b, col_c = st.columns(3)
-                        
-                        with col_a:
-                            st.metric("Precio REAL", f"${resultado['precio_actual']:,.2f}")
-                        with col_b:
-                            st.metric("RSI", f"{resultado['rsi']:.1f}")
-                        with col_c:
-                            st.metric("Volumen", f"{resultado['volumen_ratio']:.2f}")
-                        
-                        if resultado['senal']:
-                            st.success(f"✅ ORDEN EJECUTADA: {resultado['senal']}")
+            if resultado:
+                with st.expander(f"📈 {resultado['par']} - {resultado['estado']} ({resultado['timestamp']})", expanded=True):
+                    col_a, col_b, col_c, col_d = st.columns(4)
+                    
+                    with col_a:
+                        st.metric("Precio", f"${resultado['precio_actual']:,.2f}")
+                    with col_b:
+                        st.metric("EMA9", f"${resultado['ema_rapida']:,.2f}")
+                    with col_c:
+                        st.metric("EMA21", f"${resultado['ema_lenta']:,.2f}")
+                    with col_d:
+                        st.metric("RSI7", f"{resultado['rsi']:.1f}")
+                    
+                    st.metric("Volumen", f"{resultado['volumen_actual']:,.0f} vs {resultado['volumen_promedio']:,.0f}")
+                    
+                    if resultado['senal']:
+                        st.success(f"✅ SEÑAL {resultado['senal']} - Orden ejecutada")
+                    
+                    # Gráfico
+                    if resultado.get('datos_grafico'):
+                        fig = go.Figure()
+                        fig.add_trace(go.Scatter(
+                            x=resultado['datos_grafico']['timestamp'],
+                            y=resultado['datos_grafico']['precio'],
+                            name='Precio BTC',
+                            line=dict(color='blue')
+                        ))
+                        fig.add_trace(go.Scatter(
+                            x=resultado['datos_grafico']['timestamp'],
+                            y=resultado['datos_grafico']['ema_rapida'],
+                            name='EMA 9',
+                            line=dict(color='orange')
+                        ))
+                        fig.add_trace(go.Scatter(
+                            x=resultado['datos_grafico']['timestamp'],
+                            y=resultado['datos_grafico']['ema_lenta'],
+                            name='EMA 21',
+                            line=dict(color='red')
+                        ))
+                        fig.update_layout(height=400, title="BTC/USDT 3Min - EMA Momentum")
+                        st.plotly_chart(fig, use_container_width=True)
     
-    if st.session_state.trading_bot.operaciones_abiertas:
+    # Operaciones activas
+    if st.session_state.scalping_bot.ordenes_activas:
         st.subheader("🔓 Operación Activa")
-        for op in st.session_state.trading_bot.operaciones_abiertas:
-            precio_actual = st.session_state.trading_bot.obtener_precio_real(op['par'].replace("/", ""))
+        for op in st.session_state.scalping_bot.ordenes_activas:
+            precio_actual = st.session_state.scalping_bot.obtener_precio_actual()
             
             if op['tipo'] == "COMPRA":
                 profit_actual = ((precio_actual - op['precio_entrada']) / op['precio_entrada']) * 100
@@ -445,60 +614,52 @@ with col1:
                 profit_actual = ((op['precio_entrada'] - precio_actual) / op['precio_entrada']) * 100
                 color = "🟢" if profit_actual > 0 else "🔴"
             
+            trailing_status = "✅" if op['trailing_activado'] else "⏳"
+            
             st.info(f"""
             **{op['par']}** - {op['tipo']} | ID: {op['id']}
             • **Entrada:** ${op['precio_entrada']:,.2f}
-            • **Actual:** ${precio_actual:,.2f} {color} ({profit_actual:+.1f}%)
-            • **Stop Loss:** ${op['stop_loss']:,.2f} 
+            • **Actual:** ${precio_actual:,.2f} {color} ({profit_actual:+.2f}%)
+            • **Stop Loss:** ${op['stop_loss']:,.2f} {trailing_status}
             • **Take Profit:** ${op['take_profit']:,.2f}
-            • **Invertido:** ${op['cantidad']:.2f}
+            • **Invertido:** ${op['valor_dolares']:.2f}
+            • **Riesgo:** ${op['riesgo_dolares']:.2f}
             """)
 
 with col2:
-    st.header("📊 Rendimiento en Tiempo Real")
+    st.header("💼 Rendimiento")
     
-    estado = st.session_state.trading_bot.obtener_estado()
+    estado = st.session_state.scalping_bot.obtener_estado()
     
     st.metric("Capital Actual", f"${estado['capital_actual']:.2f}")
     st.metric("Señales Compra", estado['senales_compra'])
     st.metric("Señales Venta", estado['senales_venta'])
-    st.metric("Órdenes Activas", estado['ordenes_activas'])
+    st.metric("Operaciones Activas", estado['ordenes_activas'])
     
-    st.subheader("📋 Historial de Operaciones")
-    historial = st.session_state.trading_bot.obtener_historial()
+    st.subheader("📋 Historial")
+    historial = st.session_state.scalping_bot.obtener_historial()
     if historial is not None and not historial.empty:
-        st.dataframe(historial, use_container_width=True, height=250)
+        st.dataframe(historial, use_container_width=True, height=300)
         
         if 'profit_loss' in historial.columns:
             total_ganancias = historial['profit_loss'].sum()
-            st.metric("Ganancias/Pérdidas Total", f"${total_ganancias:.2f}")
-            
-            ops_ganadoras = len(historial[historial['profit_loss'] > 0])
-            ops_totales = len(historial)
-            if ops_totales > 0:
-                tasa_exito = (ops_ganadoras / ops_totales) * 100
-                st.metric("Tasa de Éxito", f"{tasa_exito:.1f}%")
+            st.metric("Ganancias/Pérdidas", f"${total_ganancias:.2f}")
     else:
-        st.info("📈 El historial aparecerá aquí automáticamente")
+        st.info("📈 El historial aparecerá aquí")
     
-    if st.button("🔄 Reiniciar Sistema Completo", type="secondary"):
-        st.session_state.trading_bot.reiniciar_sistema()
+    if st.button("🔄 Reiniciar Sistema", type="secondary"):
+        st.session_state.scalping_bot.reiniciar_sistema()
         if 'auto_trading_counter' in st.session_state:
             del st.session_state.auto_trading_counter
         st.success("✅ Sistema reiniciado")
         st.rerun()
 
-# Footer informativo
+# Footer
 st.markdown("---")
-st.markdown("**✅ SISTEMA REPARADO:** Auto-Trading funcional + Solo BTC/USDT + 1 operación máxima")
-st.markdown("**🎯 ESTRATEGIA MEJORADA:** Menos señales + TP/SL más ajustados + Capital 20%")
+st.markdown("**⚡ ESTRATEGIA BTC SCALPING 3M:** EMA9/21 + RSI7 + Volumen | RR 1:2 + Trailing Stop")
+st.markdown("**🎯 PARÁMETROS:** SL 0.25% | TP 0.5% | Riesgo 1% | Apalancamiento x5")
 
-# Estado del sistema
+# Debug
 with st.expander("🔍 Estado del Sistema"):
-    estado = st.session_state.trading_bot.obtener_estado()
+    estado = st.session_state.scalping_bot.obtener_estado()
     st.json(estado)
-    
-    if os.path.exists('/tmp/trading_bot_state.json'):
-        st.success("✅ Persistencia activa")
-    else:
-        st.info("🆕 Primera ejecución")
