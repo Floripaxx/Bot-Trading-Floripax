@@ -18,10 +18,10 @@ st.set_page_config(
 st.title("🤖 Bot de Trading FloripaX - MEXC")
 st.markdown("---")
 
-# Función para obtener datos de MEXC
+# Función para obtener datos de MEXC (corregida)
 def obtener_datos_mexc(symbol='BTCUSDT', interval='1m', limit=100):
     """
-    Obtener datos de MEXC API
+    Obtener datos de MEXC API con formato correcto
     """
     try:
         # Mapeo de intervalos de Streamlit a MEXC
@@ -44,13 +44,16 @@ def obtener_datos_mexc(symbol='BTCUSDT', interval='1m', limit=100):
         }
         
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'application/json'
         }
         
-        response = requests.get(url, params=params, headers=headers, timeout=10)
+        st.info(f"🔍 Solicitando datos para {symbol} en intervalo {mexc_interval}...")
+        
+        response = requests.get(url, params=params, headers=headers, timeout=15)
         
         if response.status_code != 200:
-            st.error(f"Error API MEXC: {response.status_code}")
+            st.error(f"Error API MEXC: {response.status_code} - {response.text}")
             return None
             
         data = response.json()
@@ -59,16 +62,24 @@ def obtener_datos_mexc(symbol='BTCUSDT', interval='1m', limit=100):
             st.error("No se recibieron datos de MEXC")
             return None
         
-        # Crear DataFrame
-        df = pd.DataFrame(data, columns=[
+        # DEBUG: Mostrar estructura de datos recibida
+        st.success(f"✅ Datos recibidos: {len(data)} velas")
+        if len(data) > 0:
+            st.info(f"📝 Estructura de la primera vela: {len(data[0])} elementos")
+        
+        # El formato de MEXC tiene 8 columnas:
+        # [timestamp, open, high, low, close, volume, close_time, quote_volume]
+        columnas_mexc = [
             'timestamp', 'open', 'high', 'low', 'close', 'volume',
-            'close_time', 'quote_asset_volume', 'number_of_trades',
-            'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
-        ])
+            'close_time', 'quote_volume'
+        ]
+        
+        # Crear DataFrame con el formato correcto de MEXC
+        df = pd.DataFrame(data, columns=columnas_mexc)
         
         # Convertir tipos de datos
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        for col in ['open', 'high', 'low', 'close', 'volume']:
+        for col in ['open', 'high', 'low', 'close', 'volume', 'quote_volume']:
             df[col] = pd.to_numeric(df[col], errors='coerce')
         
         # Eliminar filas con NaN
@@ -78,6 +89,7 @@ def obtener_datos_mexc(symbol='BTCUSDT', interval='1m', limit=100):
             st.error("No hay datos válidos después de limpiar NaN")
             return None
             
+        st.success(f"✅ DataFrame creado: {len(df)} filas x {len(df.columns)} columnas")
         return df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
         
     except requests.exceptions.Timeout:
@@ -87,7 +99,21 @@ def obtener_datos_mexc(symbol='BTCUSDT', interval='1m', limit=100):
         st.error("🔌 Error de conexión con MEXC API")
         return None
     except Exception as e:
-        st.error(f"❌ Error obteniendo datos de MEXC: {e}")
+        st.error(f"❌ Error obteniendo datos de MEXC: {str(e)}")
+        return None
+
+# Función para verificar símbolos disponibles en MEXC
+def verificar_simbolos_mexc():
+    """Verificar símbolos disponibles en MEXC"""
+    try:
+        url = "https://api.mexc.com/api/v3/exchangeInfo"
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            symbols = [symbol['symbol'] for symbol in data['symbols'] if symbol['status'] == 'TRADING']
+            return symbols
+        return None
+    except:
         return None
 
 # Función para calcular RSI de manera robusta
@@ -268,11 +294,26 @@ def main():
         # Sidebar para controles
         st.sidebar.title("⚙️ Configuración MEXC")
         
-        # Selector de símbolo (pares populares en MEXC)
-        simbolo = st.sidebar.selectbox(
-            "Seleccionar Par",
-            ['BTCUSDT', 'ETHUSDT', 'ADAUSDT', 'DOTUSDT', 'LINKUSDT', 'ATOMUSDT', 'NEARUSDT', 'APTUSDT']
-        )
+        # Verificar símbolos disponibles
+        simbolos_disponibles = verificar_simbolos_mexc()
+        if simbolos_disponibles:
+            # Filtrar solo los principales pares USDT
+            pares_principales = [s for s in simbolos_disponibles if s.endswith('USDT')]
+            pares_populares = [s for s in pares_principales if s in [
+                'BTCUSDT', 'ETHUSDT', 'ADAUSDT', 'DOTUSDT', 'LINKUSDT', 
+                'ATOMUSDT', 'NEARUSDT', 'APTUSDT', 'XRPUSDT', 'DOGEUSDT'
+            ]]
+            
+            if pares_populares:
+                simbolo = st.sidebar.selectbox("Seleccionar Par", pares_populares)
+            else:
+                simbolo = st.sidebar.selectbox("Seleccionar Par", ['BTCUSDT', 'ETHUSDT', 'ADAUSDT'])
+        else:
+            # Lista por defecto si no podemos obtener los símbolos
+            simbolo = st.sidebar.selectbox(
+                "Seleccionar Par",
+                ['BTCUSDT', 'ETHUSDT', 'ADAUSDT', 'DOTUSDT', 'LINKUSDT', 'ATOMUSDT', 'NEARUSDT', 'APTUSDT']
+            )
         
         # Selector de intervalo
         intervalo = st.sidebar.selectbox(
@@ -281,7 +322,12 @@ def main():
         )
         
         st.sidebar.markdown("---")
-        st.sidebar.info("**ℹ️ Información MEXC**\n\n- API pública sin necesidad de key\n- Límite: 1200 requests por minuto\n- Datos en tiempo real")
+        st.sidebar.info("""
+        **ℹ️ Información MEXC**
+        - API pública sin necesidad de key
+        - Límite: 1200 requests por minuto
+        - Datos en tiempo real
+        """)
         
         # Botón para actualizar
         if st.sidebar.button("🔄 Actualizar Datos MEXC"):
@@ -289,7 +335,7 @@ def main():
         
         # Obtener datos de MEXC
         with st.spinner('Obteniendo datos de MEXC...'):
-            df = obtener_datos_mexc(symbol=simbolo, interval=intervalo)
+            df = obtener_datos_mexc(symbol=simbolo, interval=intervalo, limit=50)
         
         if df is not None and len(df) > 0:
             # Calcular señales
@@ -299,7 +345,7 @@ def main():
             col1, col2, col3 = st.columns(3)
             
             with col1:
-                st.metric("Precio Actual", f"${df['close'].iloc[-1]:.2f}")
+                st.metric("Precio Actual", f"${df['close'].iloc[-1]:.4f}")
             
             with col2:
                 if senal_compra:
@@ -359,7 +405,10 @@ def main():
             
             # Mostrar últimos datos
             st.subheader("📋 Últimos Precios MEXC")
-            st.dataframe(df.tail(10)[['timestamp', 'open', 'high', 'low', 'close', 'volume']].round(4), 
+            # Formatear el DataFrame para mejor visualización
+            df_display = df.tail(10).copy()
+            df_display['timestamp'] = df_display['timestamp'].dt.strftime('%H:%M:%S')
+            st.dataframe(df_display[['timestamp', 'open', 'high', 'low', 'close', 'volume']].round(4), 
                         use_container_width=True)
             
         else:
@@ -369,6 +418,11 @@ def main():
             st.info("2. El par seleccionado podría no existir en MEXC")
             st.info("3. La API de MEXC podría estar temporalmente saturada")
             st.info("4. Intenta con un intervalo diferente")
+            
+            # Mostrar información de debug
+            st.sidebar.markdown("---")
+            st.sidebar.subheader("🔧 Debug Info")
+            st.sidebar.code(f"Símbolo: {simbolo}\nIntervalo: {intervalo}")
             
     except Exception as e:
         st.error(f"❌ Error en la aplicación: {e}")
