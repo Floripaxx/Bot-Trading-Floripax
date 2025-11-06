@@ -309,10 +309,10 @@ def ejecutar_venta(operacion, precio_venta):
         logger.error(f"Error ejecutando venta: {e}")
         return False
 
-# Función principal de señales MEJORADA
+# Función principal de señales CORREGIDA - MÁS ESTRICTA
 def obtener_senal_compra_venta(df):
     """
-    Obtener señal de compra o venta con criterios más flexibles
+    Obtener señal de compra o venta SOLO cuando se cumplen TODAS las condiciones
     """
     try:
         if df is None or len(df) < 20:
@@ -336,33 +336,39 @@ def obtener_senal_compra_venta(df):
             'stoch_d': ultimo['stoch_d']
         }
         
-        # CONDICIONES DE COMPRA MÁS FLEXIBLES
-        condicion_compra_rsi = (ultimo['rsi'] < 40)  # Cambiado de 35 a 40
-        condicion_compra_bb = (ultimo['close'] <= ultimo['bb_lower'] * 1.02)  # 2% de tolerancia
-        condicion_compra_stoch = (ultimo['stoch_k'] < 25 and  # Cambiado de 20 a 25
-                                ultimo['stoch_k'] > ultimo['stoch_d'])
+        # CONDICIONES DE COMPRA ESTRICTAS - DEBEN CUMPLIRSE TODAS
+        condicion_compra_rsi = (ultimo['rsi'] < 35)  # RSI menor a 35
+        condicion_compra_bb = (ultimo['close'] <= ultimo['bb_lower'])  # Precio en o por debajo de BB inferior
+        condicion_compra_stoch = (ultimo['stoch_k'] < 20 and ultimo['stoch_k'] > ultimo['stoch_d'])  # Estocástico oversold y creciente
         
-        # Señal de compra (más flexible - requiere solo 2 de 3 condiciones)
-        condiciones_compra = [condicion_compra_rsi, condicion_compra_bb, condicion_compra_stoch]
-        senal_compra = sum(condiciones_compra) >= 2
+        # Señal de compra SOLO si se cumplen TODAS las condiciones
+        senal_compra = condicion_compra_rsi and condicion_compra_bb and condicion_compra_stoch
         
-        # CONDICIONES DE VENTA MÁS FLEXIBLES
-        condicion_venta_rsi = (ultimo['rsi'] > 60)  # Cambiado de 65 a 60
-        condicion_venta_bb = (ultimo['close'] >= ultimo['bb_upper'] * 0.98)  # 2% de tolerancia
-        condicion_venta_stoch = (ultimo['stoch_k'] > 75 and  # Cambiado de 80 a 75
-                               ultimo['stoch_k'] < ultimo['stoch_d'])
+        # CONDICIONES DE VENTA ESTRICTAS - DEBEN CUMPLIRSE TODAS
+        condicion_venta_rsi = (ultimo['rsi'] > 65)  # RSI mayor a 65
+        condicion_venta_bb = (ultimo['close'] >= ultimo['bb_upper'])  # Precio en o por encima de BB superior
+        condicion_venta_stoch = (ultimo['stoch_k'] > 80 and ultimo['stoch_k'] < ultimo['stoch_d'])  # Estocástico overbought y decreciente
         
-        # Señal de venta (más flexible - requiere solo 2 de 3 condiciones)
-        condiciones_venta = [condicion_venta_rsi, condicion_venta_bb, condicion_venta_stoch]
-        senal_venta = sum(condiciones_venta) >= 2
+        # Señal de venta SOLO si se cumplen TODAS las condiciones
+        senal_venta = condicion_venta_rsi and condicion_venta_bb and condicion_venta_stoch
         
         # Determinar mensaje de estado
         if senal_compra:
-            mensaje = "🔵 SEÑAL DE COMPRA DETECTADA"
+            mensaje = "🔵 SEÑAL DE COMPRA - TODAS LAS CONDICIONES CUMPLIDAS"
         elif senal_venta:
-            mensaje = "🔴 SEÑAL DE VENTA DETECTADA"
+            mensaje = "🔴 SEÑAL DE VENTA - TODAS LAS CONDICIONES CUMPLIDAS"
         else:
-            mensaje = "⚪ SIN SEÑAL - ESPERANDO"
+            # Mostrar qué condiciones no se cumplen
+            condiciones_faltantes = []
+            if not condicion_compra_rsi and not condicion_venta_rsi:
+                condiciones_faltantes.append(f"RSI: {ultimo['rsi']:.1f}")
+            if not condicion_compra_bb and not condicion_venta_bb:
+                bb_pos = ((ultimo['close'] - ultimo['bb_lower']) / (ultimo['bb_upper'] - ultimo['bb_lower'])) * 100
+                condiciones_faltantes.append(f"BB: {bb_pos:.1f}%")
+            if not condicion_compra_stoch and not condicion_venta_stoch:
+                condiciones_faltantes.append(f"Stoch: {ultimo['stoch_k']:.1f}")
+            
+            mensaje = f"⚪ ESPERANDO - Condiciones: {', '.join(condiciones_faltantes)}"
             
         return senal_compra, senal_venta, mensaje, debug_info
         
@@ -457,7 +463,7 @@ def sincronizar_estado():
     st.success("✅ Estado sincronizado correctamente")
     logger.info("Estado del bot sincronizado")
 
-# Interfaz principal MEJORADA
+# Interfaz principal CORREGIDA
 def main():
     try:
         # Sidebar para controles
@@ -496,34 +502,38 @@ def main():
             ['1m', '5m', '15m', '1h', '4h']
         )
         
-        # Configuración de trading MEJORADA
+        # Configuración de trading CORREGIDA - Evitar error del slider
         st.sidebar.markdown("---")
         st.sidebar.subheader("💰 Configuración de Trading")
+        
+        # Corregir el error del slider - asegurar que min_value < max_value
+        capital_actual = max(0.1, st.session_state.capital)  # Asegurar mínimo 0.1
+        cantidad_default = min(50.0, capital_actual)
         
         cantidad_operacion = st.sidebar.slider(
             "Cantidad por operación (USDT)",
             min_value=10.0,
-            max_value=float(st.session_state.capital),
-            value=min(50.0, st.session_state.capital),
+            max_value=float(capital_actual),
+            value=float(cantidad_default),
             step=5.0
         )
         
-        # Configuración de estrategia MEJORADA
+        # Configuración de estrategia
         st.sidebar.markdown("---")
         st.sidebar.subheader("🎯 Estrategia de Trading")
         
         st.sidebar.info("""
-        **Condiciones de Compra:**
-        - RSI < 40
-        - Precio cerca de BB Inferior
-        - Estocástico K < 25 y creciente
+        **Condiciones de Compra (TODAS deben cumplirse):**
+        - RSI < 35
+        - Precio ≤ Banda Inferior BB
+        - Estocástico K < 20 y creciente
         """)
         
         st.sidebar.info("""
-        **Condiciones de Venta:**
-        - RSI > 60  
-        - Precio cerca de BB Superior
-        - Estocástico K > 75 y decreciente
+        **Condiciones de Venta (TODAS deben cumplirse):**
+        - RSI > 65  
+        - Precio ≥ Banda Superior BB
+        - Estocástico K > 80 y decreciente
         """)
         
         # Información de diagnóstico
@@ -548,7 +558,7 @@ def main():
             senal_compra, senal_venta, mensaje, debug_info = obtener_senal_compra_venta(df)
             precio_actual = df['close'].iloc[-1]
             
-            # Mostrar información de capital y operaciones MEJORADA
+            # Mostrar información de capital y operaciones
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
@@ -579,17 +589,17 @@ def main():
                 estado_bot = "🟢 EJECUTANDO" if st.session_state.bot_activo else "🔴 DETENIDO"
                 st.metric("Estado del Bot", estado_bot)
             
-            # Mostrar estado de señales MEJORADO
+            # Mostrar estado de señales CORREGIDO - Solo ejecutar cuando hay señal verdadera
             st.markdown("---")
             col5, col6 = st.columns(2)
             
             with col5:
                 if senal_compra:
-                    st.success("🎯 SEÑAL: COMPRA DETECTADA")
-                    # Ejecutar compra automáticamente solo si el bot está activo
+                    st.success("🎯 SEÑAL: COMPRA - CONDICIONES CUMPLIDAS")
+                    # Ejecutar compra automáticamente solo si el bot está activo Y hay señal verdadera
                     if (st.session_state.bot_activo and 
                         st.session_state.capital >= cantidad_operacion and 
-                        len(st.session_state.operaciones_activas) < 5):  # Aumentado límite a 5
+                        len(st.session_state.operaciones_activas) < 3):
                         
                         if ejecutar_compra(simbolo, precio_actual, cantidad_operacion):
                             st.success(f"✅ Compra ejecutada: {cantidad_operacion} USDT en {simbolo}")
@@ -599,7 +609,7 @@ def main():
                     elif st.session_state.bot_activo:
                         st.info("ℹ️ Señal de compra detectada, pero el bot no puede ejecutar (sin capital o límite alcanzado)")
                 elif senal_venta:
-                    st.error("🎯 SEÑAL: VENTA DETECTADA")
+                    st.error("🎯 SEÑAL: VENTA - CONDICIONES CUMPLIDAS")
                     # Cerrar operaciones activas si hay señal de venta y el bot está activo
                     if st.session_state.bot_activo:
                         operaciones_cerradas = 0
@@ -611,7 +621,7 @@ def main():
                         if operaciones_cerradas == 0:
                             st.info("ℹ️ Señal de venta detectada, pero no hay operaciones activas para cerrar")
                 else:
-                    st.info("🎯 SEÑAL: NEUTRAL - Esperando condiciones óptimas")
+                    st.info("🎯 SIN SEÑAL - Esperando que se cumplan todas las condiciones")
             
             with col6:
                 st.metric("Precio Actual", f"${precio_actual:.4f}")
@@ -631,7 +641,7 @@ def main():
                 st.write(f"- Estocástico D: {debug_info.get('stoch_d', 'N/A'):.2f}")
                 
                 if st.session_state.bot_activo:
-                    st.success("✅ Bot listo para operar")
+                    st.success("✅ Bot listo para operar cuando se cumplan las condiciones")
                 else:
                     st.warning("⏸️ Bot en pausa - Actívalo para operar")
             
@@ -642,6 +652,7 @@ def main():
             if fig:
                 st.plotly_chart(fig, use_container_width=True)
             
+            # Resto del código sin cambios...
             # Mostrar datos técnicos
             st.subheader("📈 Datos Técnicos MEXC")
             col1, col2, col3, col4 = st.columns(4)
@@ -703,51 +714,4 @@ def main():
             if st.session_state.historial_operaciones:
                 # Crear DataFrame del historial
                 historial_df = pd.DataFrame(st.session_state.historial_operaciones)
-                historial_df['timestamp'] = historial_df['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
-                historial_df['timestamp_cierre'] = historial_df['timestamp_cierre'].dt.strftime('%Y-%m-%d %H:%M:%S')
-                
-                # Mostrar tabla formateada
-                st.dataframe(
-                    historial_df[['symbol', 'tipo', 'precio_entrada', 'precio_salida', 
-                                 'ganancia_perdida', 'timestamp', 'timestamp_cierre']].round(4),
-                    use_container_width=True
-                )
-                
-                # Resumen del historial
-                st.subheader("📊 Resumen del Historial")
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    total_operaciones = len(st.session_state.historial_operaciones)
-                    st.metric("Total Operaciones", total_operaciones)
-                with col2:
-                    operaciones_ganadoras = len([op for op in st.session_state.historial_operaciones if op['ganancia_perdida'] > 0])
-                    st.metric("Operaciones Ganadoras", operaciones_ganadoras)
-                with col3:
-                    if total_operaciones > 0:
-                        tasa_exito = (operaciones_ganadoras / total_operaciones) * 100
-                        st.metric("Tasa de Éxito", f"{tasa_exito:.1f}%")
-                    else:
-                        st.metric("Tasa de Éxito", "0%")
-            else:
-                st.info("📝 Aún no hay operaciones en el historial")
-            
-        else:
-            st.error("❌ No se pudieron obtener datos de MEXC.")
-            st.info("💡 Soluciones posibles:")
-            st.info("1. Verifica tu conexión a internet")
-            st.info("2. El par seleccionado podría no existir en MEXC")
-            st.info("3. La API de MEXC podría estar temporalmente saturada")
-            st.info("4. Intenta con un intervalo diferente")
-            
-            # Botón de reintento
-            if st.button("🔄 Reintentar Conexión"):
-                st.rerun()
-            
-    except Exception as e:
-        st.error(f"❌ Error en la aplicación: {e}")
-        logger.error(f"Error crítico en main: {e}")
-        st.info("💡 Intenta recargar la página o sincronizar el estado")
-
-# Ejecutar la aplicación
-if __name__ == "__main__":
-    main()
+                historial_df['timestamp']
