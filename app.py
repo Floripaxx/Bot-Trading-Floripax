@@ -34,16 +34,17 @@ class MexcHighFrequencyTradingBot:
         self.is_running = False
         self.trading_thread = None
         
-        # Configuración HFT
+        # Configuración HFT - AJUSTADO PARA PRECIOS REALES ~$100k
         self.tick_window = 50
         self.tick_data = deque(maxlen=self.tick_window)
-        self.position_size = 0.05  # 5% del balance por operación
+        self.position_size = 0.08  # 8% del balance por operación (más agresivo)
         self.max_positions = 3
         self.open_positions = 0
         
-        # Estrategias
-        self.momentum_threshold = 0.003
-        self.mean_reversion_threshold = 0.002
+        # Estrategias - AJUSTADO PARA PRECIOS REALES
+        self.momentum_threshold = 0.0015  # Reducido para mayor sensibilidad
+        self.mean_reversion_threshold = 0.001  # Reducido para mayor sensibilidad
+        self.volatility_multiplier = 2.0  # Multiplicador para ajustar por volatilidad
         
         # Logging
         self.log_messages = []
@@ -153,9 +154,13 @@ class MexcHighFrequencyTradingBot:
             real_data = self.get_real_price_from_api()
             
             if real_data and not real_data.get('simulated', True):
-                self.log_message(f"✅ Precio real obtenido: ${real_data['bid']:.2f} desde {real_data.get('source', 'API')}", "INFO")
+                source_msg = real_data.get('source', 'API')
+                # No loguear cada precio para no saturar
+                if len(self.tick_data) % 20 == 0:
+                    self.log_message(f"✅ Precio real: ${real_data['bid']:.2f} desde {source_msg}", "INFO")
             else:
-                self.log_message(f"⚠️ Usando datos simulados: ${real_data['bid']:.2f}", "INFO")
+                if len(self.tick_data) % 20 == 0:
+                    self.log_message(f"⚠️ Usando datos simulados: ${real_data['bid']:.2f}", "INFO")
                 
             return real_data
             
@@ -165,7 +170,7 @@ class MexcHighFrequencyTradingBot:
             return self.get_realistic_price()
 
     def calculate_indicators(self) -> dict:
-        """Calcular indicadores técnicos"""
+        """Calcular indicadores técnicos - OPTIMIZADO PARA PRECIOS REALES"""
         if len(self.tick_data) < 10:
             return {}
         
@@ -179,12 +184,21 @@ class MexcHighFrequencyTradingBot:
         df['sma_10'] = df['price'].rolling(10).mean()
         df['price_deviation'] = (df['price'] - df['sma_5']) / df['sma_5']
         
-        # RSI
+        # Volatilidad ajustada para precios altos
+        df['volatility'] = df['returns'].rolling(10).std() * self.volatility_multiplier
+        
+        # RSI más sensible
         delta = df['price'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=8).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=8).mean()
+        gain = (delta.where(delta > 0, 0)).rolling(window=6).mean()  # Ventana más corta
+        loss = (-delta.where(delta < 0, 0)).rolling(window=6).mean()
         rs = gain / loss
         df['rsi'] = 100 - (100 / (1 + rs))
+        
+        # MACD rápido para HFT
+        exp12 = df['price'].ewm(span=6, adjust=False).mean()
+        exp26 = df['price'].ewm(span=12, adjust=False).mean()
+        df['macd'] = exp12 - exp26
+        df['macd_signal'] = df['macd'].ewm(span=5, adjust=False).mean()
         
         latest = df.iloc[-1]
         
@@ -194,35 +208,55 @@ class MexcHighFrequencyTradingBot:
             'current_price': latest['price'],
             'sma_5': latest['sma_5'],
             'sma_10': latest['sma_10'],
-            'rsi': latest['rsi']
+            'rsi': latest['rsi'],
+            'volatility': latest['volatility'],
+            'macd': latest['macd'],
+            'macd_signal': latest['macd_signal']
         }
 
     def trading_strategy(self, indicators: dict) -> str:
-        """Estrategia de trading HFT"""
+        """Estrategia de trading HFT - OPTIMIZADA PARA PRECIOS REALES"""
         if not indicators:
             return 'hold'
         
         momentum = indicators['momentum']
         deviation = indicators['price_deviation']
         rsi = indicators['rsi']
+        volatility = indicators['volatility']
+        macd = indicators['macd']
+        macd_signal = indicators['macd_signal']
         
-        # Estrategia combinada
+        # Estrategia más agresiva y sensible
         buy_conditions = [
             momentum > self.momentum_threshold,
-            deviation < -0.001,
-            rsi < 35
+            deviation < -0.0008,  # Más sensible
+            rsi < 40,  # Menos restrictivo
+            macd > macd_signal,  # Tendencia alcista
+            volatility < 0.025  # Control de volatilidad
         ]
         
         sell_conditions = [
             momentum < -self.momentum_threshold,
-            deviation > 0.001,
-            rsi > 65
+            deviation > 0.0008,  # Más sensible
+            rsi > 60,  # Menos restrictivo
+            macd < macd_signal,  # Tendencia bajista
+            volatility < 0.025  # Control de volatilidad
         ]
         
-        if sum(buy_conditions) >= 2:
+        # Estrategia de scalping rápido
+        if sum(buy_conditions) >= 3:  # Solo necesita 3 de 5 condiciones
+            self.log_message(f"🔔 SEÑAL COMPRA: momentum={momentum:.4f}, dev={deviation:.4f}, RSI={rsi:.1f}", "SIGNAL")
             return 'buy'
-        elif sum(sell_conditions) >= 2:
+        elif sum(sell_conditions) >= 3:  # Solo necesita 3 de 5 condiciones
+            self.log_message(f"🔔 SEÑAL VENTA: momentum={momentum:.4f}, dev={deviation:.4f}, RSI={rsi:.1f}", "SIGNAL")
             return 'sell'
+        
+        # Estrategia adicional: tomar ganancias rápidas
+        if self.position > 0:
+            current_profit_pct = (indicators['current_price'] - self.entry_price) / self.entry_price
+            if current_profit_pct > 0.002:  # Tomar ganancias en 0.2%
+                self.log_message(f"🎯 TOMANDO GANANCIAS: {current_profit_pct:.3%}", "PROFIT")
+                return 'sell'
         
         return 'hold'
 
@@ -264,7 +298,7 @@ class MexcHighFrequencyTradingBot:
 
     def trading_cycle(self):
         """Ciclo principal de trading"""
-        self.log_message("🚀 Iniciando ciclo de trading HFT")
+        self.log_message("🚀 Iniciando ciclo de trading HFT - ESTRATEGIA OPTIMIZADA")
         
         while self.is_running:
             try:
@@ -272,11 +306,6 @@ class MexcHighFrequencyTradingBot:
                 tick_data = self.get_ticker_price()
                 if tick_data:
                     self.tick_data.append(tick_data)
-                    
-                    # Log cada 10 ticks para no saturar
-                    if len(self.tick_data) % 10 == 0:
-                        source = tick_data.get('source', 'Unknown')
-                        self.log_message(f"Precio actual: ${tick_data['bid']:.2f} | Fuente: {source}", "INFO")
                 
                 # Calcular indicadores y ejecutar estrategia
                 indicators = self.calculate_indicators()
@@ -287,7 +316,7 @@ class MexcHighFrequencyTradingBot:
                         price = tick_data['bid'] if signal == 'buy' else tick_data['ask']
                         self.execute_trade(signal, price)
                 
-                time.sleep(3)  # Intervalo de 3 segundos para HFT
+                time.sleep(2)  # Intervalo de 2 segundos para HFT
                 
             except Exception as e:
                 self.log_message(f"Error en ciclo de trading: {e}", "ERROR")
@@ -299,7 +328,7 @@ class MexcHighFrequencyTradingBot:
             self.is_running = True
             self.trading_thread = threading.Thread(target=self.trading_cycle, daemon=True)
             self.trading_thread.start()
-            self.log_message("✅ Bot de trading iniciado")
+            self.log_message("✅ Bot de trading iniciado - ESTRATEGIA AGRESIVA ACTIVADA")
 
     def stop_trading(self):
         """Detener bot de trading"""
@@ -393,7 +422,7 @@ def main():
         
         # Mostrar estado del bot
         if bot.is_running:
-            st.success("✅ Bot Ejecutándose")
+            st.success("✅ Bot Ejecutándose - ESTRATEGIA AGRESIVA")
         else:
             st.warning("⏸️ Bot Detenido")
             
@@ -560,6 +589,8 @@ def main():
                             st.success(log_entry)
                     else:
                         st.info(log_entry)
+                elif "SEÑAL" in log_entry or "PROFIT" in log_entry:
+                    st.warning(log_entry)
                 elif "Precio actual:" in log_entry:
                     st.info(log_entry)
                 else:
