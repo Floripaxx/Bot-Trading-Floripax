@@ -1,6 +1,5 @@
 import streamlit as st
 import time
-import logging
 import threading
 from collections import deque
 from datetime import datetime
@@ -11,7 +10,6 @@ import hashlib
 import requests
 import json
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 # Configurar la página de Streamlit
 st.set_page_config(
@@ -283,23 +281,23 @@ class MexcHighFrequencyTradingBot:
         """Obtener estadísticas de performance"""
         current_price = self.tick_data[-1]['bid'] if self.tick_data else 0
         
-        if not self.positions_history:
-            return {
-                'total_trades': 0,
-                'win_rate': 0,
-                'current_balance': self.balance,
-                'open_positions': self.open_positions,
-                'current_price': current_price,
-                'total_profit': 0,
-                'equity': self.balance
-            }
+        stats = {
+            'total_trades': len(self.positions_history),
+            'win_rate': 0,
+            'current_balance': self.balance,
+            'open_positions': self.open_positions,
+            'current_price': current_price,
+            'total_profit': self.balance - 250.0,
+            'equity': self.balance,
+            'position_size': self.position  # CORREGIDO: usar self.position en lugar de stats['position_size']
+        }
         
-        # Calcular métricas
-        sell_trades = [t for t in self.positions_history if t['action'] == 'sell']
-        total_trades = len(self.positions_history)
+        if not self.positions_history:
+            return stats
         
         # Calcular win rate
-        win_rate = 0
+        sell_trades = [t for t in self.positions_history if t['action'] == 'sell']
+        
         if sell_trades:
             profitable_trades = 0
             for i in range(1, len(self.positions_history)):
@@ -311,24 +309,12 @@ class MexcHighFrequencyTradingBot:
                     current_trade['price'] > prev_trade['price']):
                     profitable_trades += 1
             
-            win_rate = (profitable_trades / len(sell_trades)) * 100 if sell_trades else 0
+            stats['win_rate'] = (profitable_trades / len(sell_trades)) * 100 if sell_trades else 0
         
-        # Calcular profit total
-        total_profit = self.balance - 250.0  # Profit desde saldo inicial
+        # Calcular equity actual
+        stats['equity'] = self.balance + (self.position * current_price) if self.position > 0 else self.balance
         
-        # Equity actual (balance + valor de posición actual)
-        equity = self.balance + (self.position * current_price) if self.position > 0 else self.balance
-        
-        return {
-            'total_trades': total_trades,
-            'win_rate': win_rate,
-            'current_balance': self.balance,
-            'open_positions': self.open_positions,
-            'current_price': current_price,
-            'total_profit': total_profit,
-            'equity': equity,
-            'position_size': self.position
-        }
+        return stats
 
 def main():
     # Título principal
@@ -423,6 +409,7 @@ def main():
         )
     
     with col6:
+        # CORREGIDO: Usar stats['position_size'] que ahora existe
         st.metric(
             label="📦 Tamaño Posición",
             value=f"{stats['position_size']:.6f}"
@@ -503,7 +490,7 @@ def main():
             )
             
             # Botón para limpiar historial
-            if st.button("🗑️ Limpiar Historial"):
+            if st.button("🗑️ Limpiar Historial", key="clear_history"):
                 bot.positions_history.clear()
                 st.rerun()
         else:
@@ -532,10 +519,10 @@ def main():
         # Botones de control de logs
         col_log1, col_log2 = st.columns(2)
         with col_log1:
-            if st.button("🔄 Actualizar Logs", use_container_width=True):
+            if st.button("🔄 Actualizar Logs", use_container_width=True, key="refresh_logs"):
                 st.rerun()
         with col_log2:
-            if st.button("🗑️ Limpiar Logs", use_container_width=True):
+            if st.button("🗑️ Limpiar Logs", use_container_width=True, key="clear_logs"):
                 bot.log_messages.clear()
                 st.rerun()
     
