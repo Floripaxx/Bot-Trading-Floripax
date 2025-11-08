@@ -1,16 +1,25 @@
+import streamlit as st
 import time
 import logging
 import threading
 from collections import deque
 from datetime import datetime
-import tkinter as tk
-from tkinter import ttk, scrolledtext
 import pandas as pd
 import numpy as np
 import hmac
 import hashlib
 import requests
 import json
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
+# Configurar la página de Streamlit
+st.set_page_config(
+    page_title="🤖 Bot HFT MEXC",
+    page_icon="🤖",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
 class MexcHighFrequencyTradingBot:
     def __init__(self, api_key: str, secret_key: str, symbol: str = 'BTCUSDT'):
@@ -19,10 +28,10 @@ class MexcHighFrequencyTradingBot:
         self.symbol = symbol
         self.base_url = 'https://api.mexc.com'
         
-        # Estado del trading
+        # Estado del trading - SALDO INICIAL 250 USD
         self.position = 0
         self.entry_price = 0
-        self.balance = 1000
+        self.balance = 250.0  # Saldo inicial de 250 USD
         self.positions_history = []
         self.is_running = False
         self.trading_thread = None
@@ -30,7 +39,7 @@ class MexcHighFrequencyTradingBot:
         # Configuración HFT
         self.tick_window = 50
         self.tick_data = deque(maxlen=self.tick_window)
-        self.position_size = 0.05
+        self.position_size = 0.05  # 5% del balance por operación
         self.max_positions = 3
         self.open_positions = 0
         
@@ -39,8 +48,16 @@ class MexcHighFrequencyTradingBot:
         self.mean_reversion_threshold = 0.002
         
         # Logging
-        logging.basicConfig(level=logging.INFO)
-        self.logger = logging.getLogger(__name__)
+        self.log_messages = []
+        
+    def log_message(self, message: str, level: str = "INFO"):
+        """Agregar mensaje al log"""
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        log_entry = f"[{timestamp}] {level}: {message}"
+        self.log_messages.append(log_entry)
+        # Mantener solo los últimos 50 mensajes
+        if len(self.log_messages) > 50:
+            self.log_messages.pop(0)
 
     def generate_signature(self, params: dict) -> str:
         """Generar firma para API de MEXC"""
@@ -74,12 +91,23 @@ class MexcHighFrequencyTradingBot:
             
             return response.json()
         except Exception as e:
-            self.logger.error(f"Error en petición MEXC: {e}")
+            self.log_message(f"Error en petición MEXC: {e}", "ERROR")
             return {}
 
-    def get_ticker_price(self) -> Dict:
+    def get_ticker_price(self) -> dict:
         """Obtener precio actual de MEXC"""
         try:
+            # Si no hay API keys, usar datos simulados
+            if not self.api_key or not self.secret_key:
+                base_price = 50000 + np.random.uniform(-500, 500)
+                return {
+                    'timestamp': datetime.now(),
+                    'bid': base_price,
+                    'ask': base_price + 1.0,
+                    'symbol': self.symbol,
+                    'simulated': True
+                }
+            
             endpoint = '/api/v3/ticker/bookTicker'
             params = {'symbol': self.symbol}
             data = self.mexc_request(endpoint, params=params)
@@ -89,27 +117,32 @@ class MexcHighFrequencyTradingBot:
                     'timestamp': datetime.now(),
                     'bid': float(data['bidPrice']),
                     'ask': float(data['askPrice']),
-                    'symbol': self.symbol
+                    'symbol': self.symbol,
+                    'simulated': False
                 }
             else:
-                # Datos de simulación si la API falla
+                # Fallback a datos simulados
+                base_price = 50000 + np.random.uniform(-500, 500)
                 return {
                     'timestamp': datetime.now(),
-                    'bid': 50000 + np.random.uniform(-100, 100),
-                    'ask': 50001 + np.random.uniform(-100, 100),
-                    'symbol': self.symbol
+                    'bid': base_price,
+                    'ask': base_price + 1.0,
+                    'symbol': self.symbol,
+                    'simulated': True
                 }
         except Exception as e:
-            self.logger.error(f"Error obteniendo ticker: {e}")
-            # Retornar datos simulados
+            self.log_message(f"Error obteniendo ticker: {e}", "ERROR")
+            # Datos simulados como fallback
+            base_price = 50000 + np.random.uniform(-500, 500)
             return {
                 'timestamp': datetime.now(),
-                'bid': 50000 + np.random.uniform(-100, 100),
-                'ask': 50001 + np.random.uniform(-100, 100),
-                'symbol': self.symbol
+                'bid': base_price,
+                'ask': base_price + 1.0,
+                'symbol': self.symbol,
+                'simulated': True
             }
 
-    def calculate_indicators(self) -> Dict:
+    def calculate_indicators(self) -> dict:
         """Calcular indicadores técnicos"""
         if len(self.tick_data) < 10:
             return {}
@@ -121,7 +154,15 @@ class MexcHighFrequencyTradingBot:
         df['returns'] = df['price'].pct_change()
         df['momentum'] = df['returns'].rolling(5).mean()
         df['sma_5'] = df['price'].rolling(5).mean()
+        df['sma_10'] = df['price'].rolling(10).mean()
         df['price_deviation'] = (df['price'] - df['sma_5']) / df['sma_5']
+        
+        # RSI
+        delta = df['price'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=8).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=8).mean()
+        rs = gain / loss
+        df['rsi'] = 100 - (100 / (1 + rs))
         
         latest = df.iloc[-1]
         
@@ -129,45 +170,61 @@ class MexcHighFrequencyTradingBot:
             'momentum': latest['momentum'],
             'price_deviation': latest['price_deviation'],
             'current_price': latest['price'],
-            'sma_5': latest['sma_5']
+            'sma_5': latest['sma_5'],
+            'sma_10': latest['sma_10'],
+            'rsi': latest['rsi']
         }
 
-    def trading_strategy(self, indicators: Dict) -> str:
-        """Estrategia de trading simplificada"""
+    def trading_strategy(self, indicators: dict) -> str:
+        """Estrategia de trading HFT"""
         if not indicators:
             return 'hold'
         
         momentum = indicators['momentum']
         deviation = indicators['price_deviation']
+        rsi = indicators['rsi']
         
-        if momentum > self.momentum_threshold and deviation < -0.001:
+        # Estrategia combinada
+        buy_conditions = [
+            momentum > self.momentum_threshold,
+            deviation < -0.001,
+            rsi < 35
+        ]
+        
+        sell_conditions = [
+            momentum < -self.momentum_threshold,
+            deviation > 0.001,
+            rsi > 65
+        ]
+        
+        if sum(buy_conditions) >= 2:
             return 'buy'
-        elif momentum < -self.momentum_threshold and deviation > 0.001:
+        elif sum(sell_conditions) >= 2:
             return 'sell'
         
         return 'hold'
 
     def execute_trade(self, action: str, price: float):
-        """Ejecutar operación (simulada)"""
+        """Ejecutar operación"""
         try:
             quantity = (self.balance * self.position_size) / price
             
             if action == 'buy':
-                self.position += quantity
-                self.entry_price = price
-                self.open_positions += 1
-                trade_info = f"COMPRA: {quantity:.6f} {self.symbol} @ {price:.2f}"
-                
+                if self.open_positions < self.max_positions:
+                    self.position += quantity
+                    self.entry_price = price
+                    self.open_positions += 1
+                    trade_info = f"🟢 COMPRA: {quantity:.6f} {self.symbol} @ ${price:.2f}"
+                    self.log_message(trade_info, "TRADE")
+                    
             elif action == 'sell' and self.position >= quantity:
                 profit = (price - self.entry_price) * quantity
                 self.position -= quantity
                 self.balance += profit
                 self.open_positions = max(0, self.open_positions - 1)
-                trade_info = f"VENTA: {quantity:.6f} {self.symbol} @ {price:.2f} | Profit: {profit:.4f} USDT"
-            else:
-                return
-            
-            self.logger.info(trade_info)
+                profit_color = "🟢" if profit > 0 else "🔴"
+                trade_info = f"{profit_color} VENTA: {quantity:.6f} {self.symbol} @ ${price:.2f} | Profit: ${profit:.4f}"
+                self.log_message(trade_info, "TRADE")
             
             # Registrar posición
             self.positions_history.append({
@@ -176,15 +233,16 @@ class MexcHighFrequencyTradingBot:
                 'price': price,
                 'quantity': quantity,
                 'balance': self.balance,
-                'position': self.position
+                'position': self.position,
+                'open_positions': self.open_positions
             })
             
         except Exception as e:
-            self.logger.error(f"Error ejecutando trade: {e}")
+            self.log_message(f"Error ejecutando trade: {e}", "ERROR")
 
-    def trading_cycle(self, gui_update_callback=None):
+    def trading_cycle(self):
         """Ciclo principal de trading"""
-        self.logger.info("Iniciando ciclo de trading HFT")
+        self.log_message("🚀 Iniciando ciclo de trading HFT")
         
         while self.is_running:
             try:
@@ -196,297 +254,295 @@ class MexcHighFrequencyTradingBot:
                 # Calcular indicadores y ejecutar estrategia
                 indicators = self.calculate_indicators()
                 
-                if indicators:
+                if indicators and len(self.tick_data) >= 10:
                     signal = self.trading_strategy(indicators)
                     if signal != 'hold':
                         price = tick_data['bid'] if signal == 'buy' else tick_data['ask']
                         self.execute_trade(signal, price)
                 
-                # Actualizar GUI si hay callback
-                if gui_update_callback:
-                    gui_update_callback()
-                
-                time.sleep(1)  # Intervalo de 1 segundo
+                time.sleep(2)  # Intervalo de 2 segundos para HFT
                 
             except Exception as e:
-                self.logger.error(f"Error en ciclo de trading: {e}")
-                time.sleep(2)
+                self.log_message(f"Error en ciclo de trading: {e}", "ERROR")
+                time.sleep(5)
 
-    def start_trading(self, gui_update_callback=None):
+    def start_trading(self):
         """Iniciar bot de trading"""
         if not self.is_running:
             self.is_running = True
-            self.trading_thread = threading.Thread(
-                target=self.trading_cycle, 
-                args=(gui_update_callback,),
-                daemon=True
-            )
+            self.trading_thread = threading.Thread(target=self.trading_cycle, daemon=True)
             self.trading_thread.start()
-            self.logger.info("Bot de trading iniciado")
+            self.log_message("✅ Bot de trading iniciado")
 
     def stop_trading(self):
         """Detener bot de trading"""
         self.is_running = False
-        self.logger.info("Bot de trading detenido")
+        self.log_message("⏹️ Bot de trading detenido")
 
     def get_performance_stats(self):
         """Obtener estadísticas de performance"""
+        current_price = self.tick_data[-1]['bid'] if self.tick_data else 0
+        
         if not self.positions_history:
             return {
                 'total_trades': 0,
                 'win_rate': 0,
                 'current_balance': self.balance,
                 'open_positions': self.open_positions,
-                'current_price': self.tick_data[-1]['bid'] if self.tick_data else 0
+                'current_price': current_price,
+                'total_profit': 0,
+                'equity': self.balance
             }
         
-        df = pd.DataFrame(self.positions_history)
-        sell_trades = df[df['action'] == 'sell']
+        # Calcular métricas
+        sell_trades = [t for t in self.positions_history if t['action'] == 'sell']
+        total_trades = len(self.positions_history)
         
+        # Calcular win rate
         win_rate = 0
-        if len(sell_trades) > 0:
-            profitable = 0
+        if sell_trades:
+            profitable_trades = 0
             for i in range(1, len(self.positions_history)):
-                if (self.positions_history[i]['action'] == 'sell' and 
-                    self.positions_history[i]['price'] > self.positions_history[i-1]['price']):
-                    profitable += 1
-            win_rate = (profitable / len(sell_trades)) * 100
+                current_trade = self.positions_history[i]
+                prev_trade = self.positions_history[i-1]
+                
+                if (current_trade['action'] == 'sell' and 
+                    prev_trade['action'] == 'buy' and
+                    current_trade['price'] > prev_trade['price']):
+                    profitable_trades += 1
+            
+            win_rate = (profitable_trades / len(sell_trades)) * 100 if sell_trades else 0
         
-        current_price = self.tick_data[-1]['bid'] if self.tick_data else 0
+        # Calcular profit total
+        total_profit = self.balance - 250.0  # Profit desde saldo inicial
+        
+        # Equity actual (balance + valor de posición actual)
+        equity = self.balance + (self.position * current_price) if self.position > 0 else self.balance
         
         return {
-            'total_trades': len(self.positions_history),
+            'total_trades': total_trades,
             'win_rate': win_rate,
             'current_balance': self.balance,
             'open_positions': self.open_positions,
             'current_price': current_price,
+            'total_profit': total_profit,
+            'equity': equity,
             'position_size': self.position
         }
 
-
-class TradingBotGUI:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("🤖 Bot de Trading HFT - MEXC")
-        self.root.geometry("1000x700")
+def main():
+    # Título principal
+    st.title("🤖 Bot de Trading de Alta Frecuencia - MEXC")
+    st.markdown("---")
+    
+    # Inicializar el bot en session_state si no existe
+    if 'bot' not in st.session_state:
+        st.session_state.bot = MexcHighFrequencyTradingBot("", "", "BTCUSDT")
+    
+    bot = st.session_state.bot
+    
+    # Sidebar para configuración
+    with st.sidebar:
+        st.header("⚙️ Configuración")
         
-        # Inicializar bot (con claves vacías para demo)
-        self.bot = MexcHighFrequencyTradingBot("", "", "BTCUSDT")
+        # Campos de configuración
+        api_key = st.text_input("API Key MEXC", type="password", 
+                               help="Opcional - Si no se proporciona, se usarán datos simulados")
+        secret_key = st.text_input("Secret Key MEXC", type="password",
+                                  help="Opcional - Si no se proporciona, se usarán datos simulados")
+        symbol = st.selectbox("Símbolo", ["BTCUSDT", "ETHUSDT", "ADAUSDT", "DOTUSDT", "LINKUSDT"])
         
-        self.setup_ui()
+        # Actualizar configuración del bot
+        bot.api_key = api_key
+        bot.secret_key = secret_key
+        bot.symbol = symbol
         
-    def setup_ui(self):
-        # Frame principal
-        main_frame = ttk.Frame(self.root, padding="10")
-        main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        
-        # Configurar grid weights
-        self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(0, weight=1)
-        main_frame.columnconfigure(1, weight=1)
-        
-        # Título
-        title_label = ttk.Label(main_frame, text="🤖 BOT DE TRADING DE ALTA FRECUENCIA - MEXC", 
-                               font=('Arial', 16, 'bold'))
-        title_label.grid(row=0, column=0, columnspan=3, pady=(0, 20))
-        
-        # Sección de configuración
-        config_frame = ttk.LabelFrame(main_frame, text="Configuración", padding="10")
-        config_frame.grid(row=1, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
-        
-        # API Key
-        ttk.Label(config_frame, text="API Key:").grid(row=0, column=0, sticky=tk.W)
-        self.api_key_entry = ttk.Entry(config_frame, width=40, show="*")
-        self.api_key_entry.grid(row=0, column=1, padx=(5, 0))
-        
-        # Secret Key
-        ttk.Label(config_frame, text="Secret Key:").grid(row=1, column=0, sticky=tk.W)
-        self.secret_key_entry = ttk.Entry(config_frame, width=40, show="*")
-        self.secret_key_entry.grid(row=1, column=1, padx=(5, 0))
-        
-        # Símbolo
-        ttk.Label(config_frame, text="Símbolo:").grid(row=2, column=0, sticky=tk.W)
-        self.symbol_entry = ttk.Entry(config_frame, width=20)
-        self.symbol_entry.insert(0, "BTCUSDT")
-        self.symbol_entry.grid(row=2, column=1, sticky=tk.W, padx=(5, 0))
+        st.markdown("---")
+        st.header("🎯 Control del Bot")
         
         # Botones de control
-        button_frame = ttk.Frame(config_frame)
-        button_frame.grid(row=3, column=0, columnspan=2, pady=(10, 0))
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🚀 Iniciar Bot", use_container_width=True):
+                bot.start_trading()
+                st.rerun()
         
-        self.start_button = ttk.Button(button_frame, text="▶ INICIAR BOT", 
-                                      command=self.start_bot, style='Accent.TButton')
-        self.start_button.pack(side=tk.LEFT, padx=(0, 10))
+        with col2:
+            if st.button("⏹️ Detener Bot", use_container_width=True):
+                bot.stop_trading()
+                st.rerun()
         
-        self.stop_button = ttk.Button(button_frame, text="⏹ DETENER BOT", 
-                                     command=self.stop_bot, state=tk.DISABLED)
-        self.stop_button.pack(side=tk.LEFT)
+        st.markdown("---")
+        st.header("💰 Información de Cuenta")
+        st.info(f"**Saldo Inicial:** $250.00 USD")
         
-        # Frame para información en tiempo real
-        info_frame = ttk.LabelFrame(main_frame, text="Información en Tiempo Real", padding="10")
-        info_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
-        
-        # Precio actual
-        self.price_label = ttk.Label(info_frame, text="Precio Actual: --", font=('Arial', 12, 'bold'))
-        self.price_label.grid(row=0, column=0, sticky=tk.W)
-        
-        # Balance
-        self.balance_label = ttk.Label(info_frame, text="Balance: --", font=('Arial', 12))
-        self.balance_label.grid(row=0, column=1, sticky=tk.W, padx=(20, 0))
-        
-        # Posiciones abiertas
-        self.positions_label = ttk.Label(info_frame, text="Posiciones Abiertas: --", font=('Arial', 12))
-        self.positions_label.grid(row=0, column=2, sticky=tk.W, padx=(20, 0))
-        
-        # Tasa de acierto
-        self.winrate_label = ttk.Label(info_frame, text="Tasa de Acierto: --", font=('Arial', 12))
-        self.winrate_label.grid(row=1, column=0, sticky=tk.W, pady=(10, 0))
-        
-        # Total de operaciones
-        self.trades_label = ttk.Label(info_frame, text="Total Operaciones: --", font=('Arial', 12))
-        self.trades_label.grid(row=1, column=1, sticky=tk.W, padx=(20, 0), pady=(10, 0))
-        
-        # Frame para historial de operaciones
-        trades_frame = ttk.LabelFrame(main_frame, text="Historial de Operaciones", padding="10")
-        trades_frame.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
-        trades_frame.columnconfigure(0, weight=1)
-        trades_frame.rowconfigure(0, weight=1)
-        
-        # Treeview para operaciones
-        columns = ('timestamp', 'action', 'price', 'quantity', 'balance')
-        self.trades_tree = ttk.Treeview(trades_frame, columns=columns, show='headings', height=8)
-        
-        # Definir columnas
-        self.trades_tree.heading('timestamp', text='Fecha/Hora')
-        self.trades_tree.heading('action', text='Acción')
-        self.trades_tree.heading('price', text='Precio')
-        self.trades_tree.heading('quantity', text='Cantidad')
-        self.trades_tree.heading('balance', text='Balance')
-        
-        # Ajustar anchos de columna
-        self.trades_tree.column('timestamp', width=150)
-        self.trades_tree.column('action', width=80)
-        self.trades_tree.column('price', width=100)
-        self.trades_tree.column('quantity', width=120)
-        self.trades_tree.column('balance', width=100)
-        
-        # Scrollbar para treeview
-        scrollbar = ttk.Scrollbar(trades_frame, orient=tk.VERTICAL, command=self.trades_tree.yview)
-        self.trades_tree.configure(yscrollcommand=scrollbar.set)
-        
-        self.trades_tree.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
-        
-        # Frame para logs
-        log_frame = ttk.LabelFrame(main_frame, text="Logs del Sistema", padding="10")
-        log_frame.grid(row=4, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S))
-        log_frame.columnconfigure(0, weight=1)
-        log_frame.rowconfigure(0, weight=1)
-        
-        # Área de texto para logs
-        self.log_text = scrolledtext.ScrolledText(log_frame, height=10, width=100)
-        self.log_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        
-        # Configurar logging para mostrar en GUI
-        self.setup_gui_logging()
-        
-        # Configurar pesos para expansión
-        main_frame.rowconfigure(3, weight=1)
-        main_frame.rowconfigure(4, weight=1)
-        
-    def setup_gui_logging(self):
-        """Configurar logging para mostrar en la GUI"""
-        class TextHandler(logging.Handler):
-            def __init__(self, text_widget):
-                super().__init__()
-                self.text_widget = text_widget
-                
-            def emit(self, record):
-                msg = self.format(record)
-                self.text_widget.insert(tk.END, msg + '\n')
-                self.text_widget.see(tk.END)
-        
-        text_handler = TextHandler(self.log_text)
-        text_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-        self.bot.logger.addHandler(text_handler)
-        
-    def start_bot(self):
-        """Iniciar el bot de trading"""
-        try:
-            # Obtener configuración de la GUI
-            api_key = self.api_key_entry.get()
-            secret_key = self.secret_key_entry.get()
-            symbol = self.symbol_entry.get()
+        # Mostrar estado del bot
+        if bot.is_running:
+            st.success("✅ Bot Ejecutándose")
+        else:
+            st.warning("⏸️ Bot Detenido")
+    
+    # Layout principal
+    col1, col2, col3, col4 = st.columns(4)
+    
+    # Obtener estadísticas actuales
+    stats = bot.get_performance_stats()
+    
+    with col1:
+        st.metric(
+            label="💰 Balance Actual",
+            value=f"${stats['current_balance']:.2f}",
+            delta=f"${stats['total_profit']:.2f}"
+        )
+    
+    with col2:
+        st.metric(
+            label="📈 Precio Actual",
+            value=f"${stats['current_price']:.2f}"
+        )
+    
+    with col3:
+        st.metric(
+            label="🎯 Tasa de Acierto",
+            value=f"{stats['win_rate']:.1f}%"
+        )
+    
+    with col4:
+        st.metric(
+            label="📊 Total Operaciones",
+            value=f"{stats['total_trades']}"
+        )
+    
+    # Segunda fila de métricas
+    col5, col6, col7, col8 = st.columns(4)
+    
+    with col5:
+        st.metric(
+            label="🔓 Posiciones Abiertas",
+            value=f"{stats['open_positions']}"
+        )
+    
+    with col6:
+        st.metric(
+            label="📦 Tamaño Posición",
+            value=f"{stats['position_size']:.6f}"
+        )
+    
+    with col7:
+        st.metric(
+            label="💹 Equity Total",
+            value=f"${stats['equity']:.2f}"
+        )
+    
+    with col8:
+        status = "🟢 LIVE" if bot.is_running else "🔴 STOP"
+        st.metric(
+            label="🔴 Estado",
+            value=status
+        )
+    
+    st.markdown("---")
+    
+    # Gráficos y datos
+    tab1, tab2, tab3 = st.tabs(["📈 Gráfico de Precios", "📋 Historial de Operaciones", "📝 Logs del Sistema"])
+    
+    with tab1:
+        # Gráfico de precios
+        if bot.tick_data:
+            prices = [tick['bid'] for tick in list(bot.tick_data)]
+            timestamps = [tick['timestamp'] for tick in list(bot.tick_data)]
             
-            # Actualizar bot con nueva configuración
-            self.bot.api_key = api_key
-            self.bot.secret_key = secret_key
-            self.bot.symbol = symbol
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=timestamps, 
+                y=prices,
+                mode='lines',
+                name='Precio BTC',
+                line=dict(color='#00ff88', width=2)
+            ))
             
-            # Iniciar bot
-            self.bot.start_trading(gui_update_callback=self.update_gui)
-            
-            # Actualizar estado de botones
-            self.start_button.config(state=tk.DISABLED)
-            self.stop_button.config(state=tk.NORMAL)
-            
-            self.bot.logger.info("Bot iniciado correctamente")
-            
-            # Iniciar actualización periódica de la GUI
-            self.schedule_gui_update()
-            
-        except Exception as e:
-            self.bot.logger.error(f"Error al iniciar bot: {e}")
-            
-    def stop_bot(self):
-        """Detener el bot de trading"""
-        self.bot.stop_trading()
-        self.start_button.config(state=tk.NORMAL)
-        self.stop_button.config(state=tk.DISABLED)
-        self.bot.logger.info("Bot detenido")
-        
-    def update_gui(self):
-        """Actualizar la interfaz gráfica con información actual"""
-        stats = self.bot.get_performance_stats()
-        
-        # Actualizar labels
-        self.price_label.config(text=f"Precio Actual: ${stats['current_price']:.2f}")
-        self.balance_label.config(text=f"Balance: ${stats['current_balance']:.2f}")
-        self.positions_label.config(text=f"Posiciones Abiertas: {stats['open_positions']}")
-        self.winrate_label.config(text=f"Tasa de Acierto: {stats['win_rate']:.1f}%")
-        self.trades_label.config(text=f"Total Operaciones: {stats['total_trades']}")
-        
-        # Actualizar treeview de operaciones
-        self.update_trades_tree()
-        
-    def update_trades_tree(self):
-        """Actualizar el treeview con las operaciones recientes"""
-        # Limpiar treeview
-        for item in self.trades_tree.get_children():
-            self.trades_tree.delete(item)
-            
-        # Agregar operaciones (mostrar las últimas 20)
-        recent_trades = self.bot.positions_history[-20:]
-        for trade in recent_trades:
-            self.trades_tree.insert('', 0, 
-                values=(
-                    trade['timestamp'].strftime('%H:%M:%S'),
-                    trade['action'].upper(),
-                    f"${trade['price']:.2f}",
-                    f"{trade['quantity']:.6f}",
-                    f"${trade['balance']:.2f}"
+            # Agregar SMA si hay suficientes datos
+            if len(prices) >= 10:
+                df = pd.DataFrame(prices, columns=['price'])
+                df['sma_10'] = df['price'].rolling(10).mean()
+                fig.add_trace(go.Scatter(
+                    x=timestamps[9:],
+                    y=df['sma_10'].dropna(),
+                    mode='lines',
+                    name='SMA 10',
+                    line=dict(color='#ffaa00', width=1, dash='dash')
                 ))
-                
-    def schedule_gui_update(self):
-        """Programar actualización periódica de la GUI"""
-        if self.bot.is_running:
-            self.update_gui()
-            self.root.after(1000, self.schedule_gui_update)  # Actualizar cada segundo
-
-def main():
-    root = tk.Tk()
-    app = TradingBotGUI(root)
-    root.mainloop()
+            
+            fig.update_layout(
+                title=f"Precio de {bot.symbol} en Tiempo Real",
+                xaxis_title="Tiempo",
+                yaxis_title="Precio (USD)",
+                template="plotly_dark",
+                height=400
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Esperando datos de mercado...")
+    
+    with tab2:
+        # Historial de operaciones
+        if bot.positions_history:
+            # Crear DataFrame para mostrar
+            df = pd.DataFrame(bot.positions_history)
+            df['timestamp'] = df['timestamp'].dt.strftime('%H:%M:%S')
+            df['price'] = df['price'].apply(lambda x: f"${x:.2f}")
+            df['quantity'] = df['quantity'].apply(lambda x: f"{x:.6f}")
+            df['balance'] = df['balance'].apply(lambda x: f"${x:.2f}")
+            
+            # Mostrar tabla
+            st.dataframe(
+                df[['timestamp', 'action', 'price', 'quantity', 'balance', 'open_positions']],
+                use_container_width=True,
+                height=400
+            )
+            
+            # Botón para limpiar historial
+            if st.button("🗑️ Limpiar Historial"):
+                bot.positions_history.clear()
+                st.rerun()
+        else:
+            st.info("No hay operaciones registradas aún.")
+    
+    with tab3:
+        # Logs del sistema
+        log_container = st.container(height=400)
+        with log_container:
+            for log_entry in reversed(bot.log_messages[-20:]):  # Mostrar últimos 20 logs
+                if "ERROR" in log_entry:
+                    st.error(log_entry)
+                elif "TRADE" in log_entry:
+                    if "COMPRA" in log_entry:
+                        st.success(log_entry)
+                    elif "VENTA" in log_entry:
+                        if "🔴" in log_entry:
+                            st.error(log_entry)
+                        else:
+                            st.success(log_entry)
+                    else:
+                        st.info(log_entry)
+                else:
+                    st.info(log_entry)
+        
+        # Botones de control de logs
+        col_log1, col_log2 = st.columns(2)
+        with col_log1:
+            if st.button("🔄 Actualizar Logs", use_container_width=True):
+                st.rerun()
+        with col_log2:
+            if st.button("🗑️ Limpiar Logs", use_container_width=True):
+                bot.log_messages.clear()
+                st.rerun()
+    
+    # Auto-refresh cada 5 segundos si el bot está corriendo
+    if bot.is_running:
+        time.sleep(5)
+        st.rerun()
 
 if __name__ == "__main__":
     main()
