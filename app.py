@@ -43,26 +43,30 @@ class MexcHighFrequencyTradingBot:
         
     def save_state(self):
         """Guardar estado en archivo JSON"""
-        state = {
-            'cash_balance': self.cash_balance,
-            'position': self.position,
-            'entry_price': self.entry_price,
-            'positions_history': self.positions_history,
-            'open_positions': self.open_positions,
-            'log_messages': self.log_messages,
-            'tick_data': list(self.tick_data),
-            'is_running': self.is_running,
-            'total_profit': self.total_profit
-        }
         try:
-            # Convertir objetos datetime a string para JSON
-            for pos in state['positions_history']:
-                if isinstance(pos['timestamp'], datetime):
-                    pos['timestamp'] = pos['timestamp'].isoformat()
+            state = {
+                'cash_balance': self.cash_balance,
+                'position': self.position,
+                'entry_price': self.entry_price,
+                'positions_history': [],
+                'open_positions': self.open_positions,
+                'log_messages': self.log_messages,
+                'tick_data': [],
+                'is_running': self.is_running,
+                'total_profit': self.total_profit
+            }
             
-            for tick in state['tick_data']:
-                if isinstance(tick['timestamp'], datetime):
-                    tick['timestamp'] = tick['timestamp'].isoformat()
+            # Convertir positions_history
+            for pos in self.positions_history:
+                pos_copy = pos.copy()
+                pos_copy['timestamp'] = pos['timestamp'].isoformat() if isinstance(pos['timestamp'], datetime) else str(pos['timestamp'])
+                state['positions_history'].append(pos_copy)
+            
+            # Convertir tick_data
+            for tick in list(self.tick_data):
+                tick_copy = tick.copy()
+                tick_copy['timestamp'] = tick['timestamp'].isoformat() if isinstance(tick['timestamp'], datetime) else str(tick['timestamp'])
+                state['tick_data'].append(tick_copy)
                     
             with open('bot_state.json', 'w') as f:
                 json.dump(state, f, default=str, indent=2)
@@ -79,22 +83,30 @@ class MexcHighFrequencyTradingBot:
                 # Convertir deque de tick_data
                 tick_data = deque(maxlen=50)
                 for tick in state.get('tick_data', []):
+                    tick_copy = tick.copy()
                     if 'timestamp' in tick:
                         try:
-                            tick['timestamp'] = datetime.fromisoformat(tick['timestamp'].replace('Z', '+00:00'))
+                            if 'T' in tick['timestamp']:
+                                tick_copy['timestamp'] = datetime.fromisoformat(tick['timestamp'].replace('Z', '+00:00'))
+                            else:
+                                tick_copy['timestamp'] = datetime.now()
                         except:
-                            tick['timestamp'] = datetime.now()
-                    tick_data.append(tick)
+                            tick_copy['timestamp'] = datetime.now()
+                    tick_data.append(tick_copy)
                 
                 # Convertir timestamps en positions_history
                 positions_history = []
                 for pos in state.get('positions_history', []):
+                    pos_copy = pos.copy()
                     if 'timestamp' in pos:
                         try:
-                            pos['timestamp'] = datetime.fromisoformat(pos['timestamp'].replace('Z', '+00:00'))
+                            if 'T' in pos['timestamp']:
+                                pos_copy['timestamp'] = datetime.fromisoformat(pos['timestamp'].replace('Z', '+00:00'))
+                            else:
+                                pos_copy['timestamp'] = datetime.now()
                         except:
-                            pos['timestamp'] = datetime.now()
-                    positions_history.append(pos)
+                            pos_copy['timestamp'] = datetime.now()
+                    positions_history.append(pos_copy)
                 
                 self.bot_data = {
                     'cash_balance': state.get('cash_balance', 250.0),
@@ -476,8 +488,11 @@ class MexcHighFrequencyTradingBot:
 
     def close_all_positions(self):
         """Cerrar todas las posiciones abiertas"""
-        if self.position > 0 and self.tick_data:
-            tick_data = list(self.tick_data)[-1] if self.tick_data else self.get_ticker_price()
+        if self.position > 0:
+            if self.tick_data:
+                tick_data = list(self.tick_data)[-1]
+            else:
+                tick_data = self.get_ticker_price()
             price = tick_data['ask']
             self.execute_trade('sell', price)
             self.log_message("🧹 TODAS las posiciones cerradas", "INFO")
@@ -493,6 +508,7 @@ class MexcHighFrequencyTradingBot:
         self.tick_data.clear()
         self.total_profit = 0
         self.log_message("🔄 Cuenta reiniciada a $250.00", "INFO")
+        self.save_state()
 
     def trading_cycle(self):
         """Ciclo principal de trading"""
@@ -695,52 +711,67 @@ def main():
             prices = [tick['bid'] for tick in list(bot.tick_data)]
             timestamps = [tick['timestamp'] for tick in list(bot.tick_data)]
             
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=timestamps, 
-                y=prices,
-                mode='lines',
-                name=f'Precio {bot.symbol}',
-                line=dict(color='#00ff88', width=2)
-            ))
+            # Asegurarse de que los timestamps sean datetime
+            valid_timestamps = []
+            valid_prices = []
+            for ts, price in zip(timestamps, prices):
+                if isinstance(ts, datetime):
+                    valid_timestamps.append(ts)
+                    valid_prices.append(price)
             
-            if len(prices) >= 10:
-                df = pd.DataFrame(prices, columns=['price'])
-                df['sma_10'] = df['price'].rolling(10).mean()
+            if valid_timestamps:
+                fig = go.Figure()
                 fig.add_trace(go.Scatter(
-                    x=timestamps[9:],
-                    y=df['sma_10'].dropna(),
+                    x=valid_timestamps, 
+                    y=valid_prices,
                     mode='lines',
-                    name='SMA 10',
-                    line=dict(color='#ffaa00', width=1, dash='dash')
+                    name=f'Precio {bot.symbol}',
+                    line=dict(color='#00ff88', width=2)
                 ))
-            
-            fig.update_layout(
-                title=f"Precio de {bot.symbol} en Tiempo Real",
-                xaxis_title="Tiempo",
-                yaxis_title="Precio (USD)",
-                template="plotly_dark",
-                height=400
-            )
-            
-            st.plotly_chart(fig, use_container_width=True)
+                
+                if len(valid_prices) >= 10:
+                    df = pd.DataFrame({'price': valid_prices})
+                    df['sma_10'] = df['price'].rolling(10).mean()
+                    fig.add_trace(go.Scatter(
+                        x=valid_timestamps[9:],
+                        y=df['sma_10'].dropna(),
+                        mode='lines',
+                        name='SMA 10',
+                        line=dict(color='#ffaa00', width=1, dash='dash')
+                    ))
+                
+                fig.update_layout(
+                    title=f"Precio de {bot.symbol} en Tiempo Real",
+                    xaxis_title="Tiempo",
+                    yaxis_title="Precio (USD)",
+                    template="plotly_dark",
+                    height=400
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No hay datos válidos para graficar")
         else:
             st.info("Esperando datos de mercado...")
     
     with tab2:
         if bot.positions_history:
-            df = pd.DataFrame(bot.positions_history)
-            df['timestamp'] = df['timestamp'].dt.strftime('%H:%M:%S')
-            df['price'] = df['price'].apply(lambda x: f"${x:.2f}")
-            df['quantity'] = df['quantity'].apply(lambda x: f"{x:.6f}")
-            df['cash_balance'] = df['cash_balance'].apply(lambda x: f"${x:.2f}")
-            df['total_equity'] = df['total_equity'].apply(lambda x: f"${x:.2f}")
+            # Crear DataFrame seguro
+            display_data = []
+            for pos in bot.positions_history:
+                row = {
+                    'timestamp': pos['timestamp'].strftime('%H:%M:%S') if isinstance(pos['timestamp'], datetime) else str(pos['timestamp']),
+                    'action': pos['action'],
+                    'price': f"${pos['price']:.2f}",
+                    'quantity': f"{pos['quantity']:.6f}",
+                    'cash_balance': f"${pos['cash_balance']:.2f}",
+                    'total_equity': f"${pos['total_equity']:.2f}",
+                    'open_positions': pos['open_positions']
+                }
+                display_data.append(row)
             
-            st.dataframe(
-                df[['timestamp', 'action', 'price', 'quantity', 'cash_balance', 'total_equity', 'open_positions']],
-                use_container_width=True,
-                height=400
-            )
+            df = pd.DataFrame(display_data)
+            st.dataframe(df, use_container_width=True, height=400)
         else:
             st.info("No hay operaciones registradas aún.")
     
