@@ -1,717 +1,412 @@
-import streamlit as st
+import time
+import logging
+from typing import Dict, List
 import pandas as pd
 import numpy as np
-import time
 from datetime import datetime
+import threading
+from collections import deque
+import hmac
+import hashlib
 import requests
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import logging
 import json
 
-# Configurar logging para diagnóstico
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('bot_trading.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
-
-# Configurar página de Streamlit
-st.set_page_config(
-    page_title="Bot de Trading FloripaX - MEXC",
-    page_icon="📈",
-    layout="wide"
-)
-
-# Título principal
-st.title("🤖 Bot de Trading FloripaX - MEXC")
-st.markdown("---")
-
-# Estado inicial del bot con persistencia mejorada
-if 'bot_initialized' not in st.session_state:
-    st.session_state.bot_initialized = True
-    st.session_state.capital = 250.0
-    st.session_state.operaciones_activas = []
-    st.session_state.historial_operaciones = []
-    st.session_state.bot_activo = False
-    st.session_state.ultima_actualizacion = datetime.now()
-    st.session_state.errores_conexion = 0
-    st.session_state.debug_info = []
-
-# Función para guardar estado del bot
-def guardar_estado_bot():
-    """Guardar estado del bot para persistencia entre sesiones"""
-    try:
-        estado = {
-            'capital': st.session_state.capital,
-            'operaciones_activas': st.session_state.operaciones_activas,
-            'historial_operaciones': st.session_state.historial_operaciones,
-            'bot_activo': st.session_state.bot_activo,
-            'ultima_actualizacion': st.session_state.ultima_actualizacion.isoformat()
-        }
-        with open('estado_bot.json', 'w') as f:
-            json.dump(estado, f, default=str)
-    except Exception as e:
-        logger.error(f"Error guardando estado: {e}")
-
-# Función para cargar estado del bot
-def cargar_estado_bot():
-    """Cargar estado del bot desde archivo"""
-    try:
-        with open('estado_bot.json', 'r') as f:
-            estado = json.load(f)
-            st.session_state.capital = estado['capital']
-            st.session_state.operaciones_activas = estado['operaciones_activas']
-            st.session_state.historial_operaciones = estado['historial_operaciones']
-            st.session_state.bot_activo = estado['bot_activo']
-            st.session_state.ultima_actualizacion = datetime.fromisoformat(estado['ultima_actualizacion'])
-    except FileNotFoundError:
-        logger.info("No se encontró archivo de estado, usando valores por defecto")
-    except Exception as e:
-        logger.error(f"Error cargando estado: {e}")
-
-# Cargar estado al inicio
-cargar_estado_bot()
-
-# Función mejorada para obtener datos de MEXC
-def obtener_datos_mexc(symbol='BTCUSDT', interval='1m', limit=100):
-    """
-    Obtener datos de MEXC API con manejo robusto de errores
-    """
-    try:
-        # Mapeo de intervalos de Streamlit a MEXC
-        interval_map = {
-            '1m': '1m',
-            '5m': '5m',
-            '15m': '15m',
-            '1h': '1h',
-            '4h': '4h',
-            '1d': '1d'
-        }
+class MexcHighFrequencyTradingBot:
+    def __init__(self, api_key: str, secret_key: str, symbol: str = 'BTCUSDT'):
+        self.api_key = api_key
+        self.secret_key = secret_key
+        self.symbol = symbol
+        self.base_url = 'https://api.mexc.com'
+        self.ws_url = 'wss://wbs.mexc.com/ws'
         
-        mexc_interval = interval_map.get(interval, '1m')
+        # Estado del trading
+        self.position = 0
+        self.entry_price = 0
+        self.balance = 1000  # Balance inicial en USDT
+        self.positions_history = []
         
-        url = "https://api.mexc.com/api/v3/klines"
-        params = {
-            'symbol': symbol,
-            'interval': mexc_interval,
-            'limit': limit
-        }
+        # Configuración HFT para MEXC
+        self.tick_window = 50
+        self.tick_data = deque(maxlen=self.tick_window)
+        self.min_spread = 0.01  # 1%
+        self.position_size = 0.05  # 5% del balance por operación
+        self.max_positions = 3
+        self.open_positions = 0
         
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'application/json'
-        }
+        # Estrategias HFT
+        self.momentum_threshold = 0.003  # 0.3%
+        self.mean_reversion_threshold = 0.002  # 0.2%
+        self.volatility_lookback = 15
         
-        # Timeout más agresivo y reintentos
-        response = requests.get(url, params=params, headers=headers, timeout=10)
-        
-        if response.status_code != 200:
-            error_msg = f"Error API MEXC: {response.status_code}"
-            logger.error(error_msg)
-            st.session_state.errores_conexion += 1
-            return None
+        # Configurar logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s'
+        )
+        self.logger = logging.getLogger(__name__)
+
+    def generate_signature(self, params: dict) -> str:
+        """Generar firma para API de MEXC"""
+        query_string = '&'.join([f"{k}={v}" for k, v in sorted(params.items())])
+        return hmac.new(
+            self.secret_key.encode('utf-8'),
+            query_string.encode('utf-8'),
+            hashlib.sha256
+        ).hexdigest()
+
+    def mexc_request(self, endpoint: str, method: str = 'GET', params: dict = None) -> dict:
+        """Realizar petición a la API de MEXC"""
+        try:
+            url = f"{self.base_url}{endpoint}"
+            headers = {
+                'X-MEXC-APIKEY': self.api_key,
+                'Content-Type': 'application/json'
+            }
             
-        data = response.json()
-        
-        if not data or len(data) == 0:
-            error_msg = "No se recibieron datos de MEXC"
-            logger.warning(error_msg)
+            if params is None:
+                params = {}
+                
+            if method == 'GET':
+                params['timestamp'] = int(time.time() * 1000)
+                params['signature'] = self.generate_signature(params)
+                response = requests.get(url, headers=headers, params=params)
+            else:
+                params['timestamp'] = int(time.time() * 1000)
+                params['signature'] = self.generate_signature(params)
+                response = requests.post(url, headers=headers, data=json.dumps(params))
+            
+            return response.json()
+        except Exception as e:
+            self.logger.error(f"Error en petición MEXC: {e}")
+            return {}
+
+    def get_account_balance(self) -> float:
+        """Obtener balance de la cuenta en MEXC"""
+        try:
+            data = self.mexc_request('/api/v3/account')
+            if 'balances' in data:
+                for balance in data['balances']:
+                    if balance['asset'] == 'USDT':
+                        return float(balance['free'])
+            return 0.0
+        except Exception as e:
+            self.logger.error(f"Error obteniendo balance: {e}")
+            return 0.0
+
+    def get_ticker_price(self) -> Dict:
+        """Obtener precio actual de MEXC"""
+        try:
+            endpoint = '/api/v3/ticker/bookTicker'
+            params = {'symbol': self.symbol}
+            data = self.mexc_request(endpoint, params=params)
+            
+            if data and 'bidPrice' in data and 'askPrice' in data:
+                return {
+                    'timestamp': datetime.now(),
+                    'bid': float(data['bidPrice']),
+                    'ask': float(data['askPrice']),
+                    'symbol': self.symbol
+                }
             return None
+        except Exception as e:
+            self.logger.error(f"Error obteniendo ticker: {e}")
+            return None
+
+    def place_order(self, side: str, quantity: float, price: float = None) -> bool:
+        """Colocar orden en MEXC"""
+        try:
+            endpoint = '/api/v3/order'
+            params = {
+                'symbol': self.symbol,
+                'side': side.upper(),
+                'type': 'LIMIT',
+                'quantity': round(quantity, 6),
+                'price': round(price, 2) if price else None,
+                'timeInForce': 'IOC'  # Immediate or Cancel para HFT
+            }
+            
+            # Para market orders
+            if price is None:
+                params['type'] = 'MARKET'
+                params.pop('price')
+                params.pop('timeInForce')
+            
+            result = self.mexc_request(endpoint, 'POST', params)
+            
+            if 'orderId' in result:
+                self.logger.info(f"Orden {side} ejecutada: {quantity} {self.symbol} @ {price}")
+                return True
+            else:
+                self.logger.error(f"Error en orden: {result}")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"Error colocando orden: {e}")
+            return False
+
+    def calculate_indicators(self) -> Dict:
+        """Calcular indicadores para estrategias HFT"""
+        if len(self.tick_data) < self.volatility_lookback:
+            return {}
         
-        # El formato de MEXC tiene 8 columnas:
-        columnas_mexc = [
-            'timestamp', 'open', 'high', 'low', 'close', 'volume',
-            'close_time', 'quote_volume'
+        prices = [tick['bid'] for tick in self.tick_data]
+        df = pd.DataFrame(prices, columns=['price'])
+        
+        # Indicadores de momentum
+        df['returns'] = df['price'].pct_change()
+        df['momentum'] = df['returns'].rolling(5).mean()
+        df['volatility'] = df['returns'].rolling(self.volatility_lookback).std()
+        
+        # Indicadores de mean reversion
+        df['sma_10'] = df['price'].rolling(10).mean()
+        df['sma_5'] = df['price'].rolling(5).mean()
+        df['price_deviation'] = (df['price'] - df['sma_5']) / df['sma_5']
+        
+        # RSI rápido
+        delta = df['price'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=8).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=8).mean()
+        rs = gain / loss
+        df['rsi'] = 100 - (100 / (1 + rs))
+        
+        latest = df.iloc[-1]
+        
+        return {
+            'momentum': latest['momentum'],
+            'volatility': latest['volatility'],
+            'price_deviation': latest['price_deviation'],
+            'current_price': latest['price'],
+            'sma_5': latest['sma_5'],
+            'sma_10': latest['sma_10'],
+            'rsi': latest['rsi']
+        }
+
+    def scalping_strategy(self, indicators: Dict) -> str:
+        """Estrategia de scalping para HFT en MEXC"""
+        if not indicators:
+            return 'hold'
+        
+        momentum = indicators['momentum']
+        deviation = indicators['price_deviation']
+        rsi = indicators['rsi']
+        volatility = indicators['volatility']
+        
+        # Condiciones de compra (scalping largo)
+        buy_conditions = [
+            momentum > self.momentum_threshold,
+            deviation < -0.001,  # Precio por debajo de SMA
+            rsi < 40,  # RSI oversold
+            volatility < 0.015  # Baja volatilidad
         ]
         
-        # Crear DataFrame con el formato correcto de MEXC
-        df = pd.DataFrame(data, columns=columnas_mexc)
+        # Condiciones de venta (scalping corto)
+        sell_conditions = [
+            momentum < -self.momentum_threshold,
+            deviation > 0.001,  # Precio por encima de SMA
+            rsi > 60,  # RSI overbought
+            volatility < 0.015
+        ]
         
-        # Convertir tipos de datos
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        for col in ['open', 'high', 'low', 'close', 'volume', 'quote_volume']:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
+        if sum(buy_conditions) >= 3:
+            return 'buy'
+        elif sum(sell_conditions) >= 3:
+            return 'sell'
         
-        # Eliminar filas con NaN
-        df = df.dropna()
-        
-        if len(df) == 0:
-            error_msg = "No hay datos válidos después de limpiar NaN"
-            logger.warning(error_msg)
-            return None
-        
-        logger.info(f"Datos obtenidos exitosamente: {symbol} - {len(df)} registros")
-        st.session_state.errores_conexion = 0  # Resetear contador de errores
-        
-        return df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
-        
-    except requests.exceptions.Timeout:
-        error_msg = "⏰ Timeout conectando a MEXC API"
-        logger.error(error_msg)
-        st.session_state.errores_conexion += 1
-        return None
-    except requests.exceptions.ConnectionError:
-        error_msg = "🔌 Error de conexión con MEXC API"
-        logger.error(error_msg)
-        st.session_state.errores_conexion += 1
-        return None
-    except Exception as e:
-        error_msg = f"❌ Error obteniendo datos de MEXC: {str(e)}"
-        logger.error(error_msg)
-        st.session_state.errores_conexion += 1
-        return None
+        return 'hold'
 
-# Función para calcular RSI de manera robusta
-def calcular_rsi(df, period=14):
-    """Calcular RSI con manejo de errores mejorado"""
-    try:
-        if len(df) < period:
-            return pd.Series([50] * len(df))
-            
-        delta = df['close'].diff()
-        gain = delta.where(delta > 0, 0)
-        loss = -delta.where(delta < 0, 0)
+    def market_making_strategy(self, indicators: Dict, current_bid: float, current_ask: float) -> str:
+        """Estrategia de market making"""
+        if not indicators or self.open_positions >= self.max_positions:
+            return 'hold'
         
-        avg_gain = gain.rolling(window=period, min_periods=1).mean()
-        avg_loss = loss.rolling(window=period, min_periods=1).mean()
+        spread = (current_ask - current_bid) / current_bid
         
-        rs = avg_gain / avg_loss
-        rsi = 100 - (100 / (1 + rs))
+        if spread > self.min_spread:
+            # Oportunidad de market making
+            if self.position == 0:
+                return 'buy'
+            elif self.position > 0 and indicators['price_deviation'] > 0.002:
+                return 'sell'
         
-        # Reemplazar infinitos y NaN
-        rsi = rsi.replace([np.inf, -np.inf], np.nan).fillna(50)
-        
-        # Asegurar que RSI esté entre 0 y 100
-        rsi = rsi.clip(0, 100)
-        
-        return rsi
-    except Exception as e:
-        logger.error(f"Error calculando RSI: {e}")
-        return pd.Series([50] * len(df))
+        return 'hold'
 
-# Función para calcular Bandas de Bollinger mejorada
-def calcular_bb(df, period=20, std=2):
-    """Calcular Bandas de Bollinger con mejor manejo de bordes"""
-    try:
-        df = df.copy()
-        
-        if len(df) < period:
-            # Si no hay suficientes datos, usar valores por defecto
-            middle = df['close'].mean() if len(df) > 0 else 0
-            return (pd.Series([middle + middle * 0.1] * len(df)), 
-                    pd.Series([middle] * len(df)), 
-                    pd.Series([middle - middle * 0.1] * len(df)))
-        
-        df['bb_middle'] = df['close'].rolling(window=period, min_periods=1).mean()
-        bb_std = df['close'].rolling(window=period, min_periods=1).std()
-        
-        df['bb_upper'] = df['bb_middle'] + (bb_std * std)
-        df['bb_lower'] = df['bb_middle'] - (bb_std * std)
-        
-        # Rellenar NaN con valores extrapolados
-        df['bb_upper'] = df['bb_upper'].fillna(method='bfill').fillna(method='ffill')
-        df['bb_lower'] = df['bb_lower'].fillna(method='bfill').fillna(method='ffill')
-        df['bb_middle'] = df['bb_middle'].fillna(method='bfill').fillna(method='ffill')
-        
-        return df['bb_upper'], df['bb_middle'], df['bb_lower']
-    except Exception as e:
-        logger.error(f"Error calculando BB: {e}")
-        middle = df['close'].mean() if len(df) > 0 else 0
-        return (pd.Series([middle] * len(df)), 
-                pd.Series([middle] * len(df)), 
-                pd.Series([middle] * len(df)))
+    def execute_trade(self, action: str, price: float):
+        """Ejecutar operación en MEXC"""
+        try:
+            if self.open_positions >= self.max_positions and action == 'buy':
+                self.logger.warning("Máximo de posiciones alcanzado")
+                return
+            
+            # Calcular cantidad basada en balance y tamaño de posición
+            quantity = (self.balance * self.position_size) / price
+            
+            if action == 'buy':
+                if self.place_order('BUY', quantity, price * 0.999):  # Precio ligeramente mejor
+                    self.position += quantity
+                    self.entry_price = price
+                    self.open_positions += 1
+                    self.logger.info(f"COMPRA HFT: {quantity:.6f} {self.symbol} @ {price:.2f}")
+                    
+            elif action == 'sell' and self.position >= quantity:
+                if self.place_order('SELL', quantity, price * 1.001):  # Precio ligeramente mejor
+                    profit = (price - self.entry_price) * quantity
+                    self.position -= quantity
+                    self.balance += profit
+                    self.open_positions = max(0, self.open_positions - 1)
+                    self.logger.info(f"VENTA HFT: {quantity:.6f} {self.symbol} @ {price:.2f} | Profit: {profit:.4f} USDT")
+            
+            # Actualizar balance periódicamente
+            if len(self.positions_history) % 10 == 0:
+                self.balance = self.get_account_balance()
+            
+            # Registrar posición
+            self.positions_history.append({
+                'timestamp': datetime.now(),
+                'action': action,
+                'price': price,
+                'quantity': quantity,
+                'balance': self.balance,
+                'position': self.position
+            })
+            
+        except Exception as e:
+            self.logger.error(f"Error ejecutando trade: {e}")
 
-# Función para calcular Estocástico
-def calcular_estocastico(df, k_period=14, d_period=3):
-    """Calcular Estocástico con manejo de errores"""
-    try:
-        if len(df) < k_period:
-            return (pd.Series([50] * len(df)), 
-                    pd.Series([50] * len(df)))
-            
-        low_min = df['low'].rolling(window=k_period, min_periods=1).min()
-        high_max = df['high'].rolling(window=k_period, min_periods=1).max()
+    def risk_management(self):
+        """Gestión de riesgo específica para MEXC"""
+        if len(self.positions_history) < 5:
+            return
         
-        df['stoch_k'] = 100 * ((df['close'] - low_min) / (high_max - low_min))
-        df['stoch_k'] = df['stoch_k'].replace([np.inf, -np.inf], 50).fillna(50)
-        df['stoch_d'] = df['stoch_k'].rolling(window=d_period, min_periods=1).mean()
+        # Calcular drawdown reciente
+        recent_trades = self.positions_history[-10:]
+        profits = []
+        for i in range(1, len(recent_trades)):
+            if recent_trades[i]['action'] == 'sell':
+                profit = (recent_trades[i]['price'] - recent_trades[i-1]['price']) * recent_trades[i]['quantity']
+                profits.append(profit)
         
-        # Asegurar que esté entre 0 y 100
-        df['stoch_k'] = df['stoch_k'].clip(0, 100)
-        df['stoch_d'] = df['stoch_d'].clip(0, 100)
-        
-        return df['stoch_k'], df['stoch_d']
-    except Exception as e:
-        logger.error(f"Error calculando Estocástico: {e}")
-        return (pd.Series([50] * len(df)), 
-                pd.Series([50] * len(df)))
+        if profits and sum(profits) < -self.balance * 0.03:  # 3% drawdown
+            self.logger.warning("Drawdown del 3% detectado - reduciendo exposición")
+            self.position_size = max(0.01, self.position_size * 0.5)  # Reducir tamaño de posición
 
-# Función mejorada para ejecutar operación de compra
-def ejecutar_compra(symbol, precio, cantidad_usdt):
-    """Ejecutar operación de compra con logging"""
-    try:
-        if cantidad_usdt > st.session_state.capital:
-            logger.warning(f"Capital insuficiente: {cantidad_usdt} > {st.session_state.capital}")
-            return False
-            
-        cantidad_cripto = cantidad_usdt / precio
-        operacion = {
-            'id': f"compra_{int(time.time())}_{np.random.randint(1000, 9999)}",
-            'symbol': symbol,
-            'tipo': 'COMPRA',
-            'precio_entrada': precio,
-            'cantidad_cripto': cantidad_cripto,
-            'cantidad_usdt': cantidad_usdt,
-            'timestamp': datetime.now(),
-            'estado': 'ACTIVA'
-        }
-        st.session_state.operaciones_activas.append(operacion)
-        st.session_state.capital -= cantidad_usdt
-        st.session_state.ultima_actualizacion = datetime.now()
+    def trading_cycle(self):
+        """Ciclo principal de trading HFT para MEXC"""
+        self.logger.info(f"Iniciando ciclo HFT para {self.symbol} en MEXC")
         
-        logger.info(f"Compra ejecutada: {symbol} - ${precio:.4f} - ${cantidad_usdt:.2f}")
-        guardar_estado_bot()
-        return True
-    except Exception as e:
-        logger.error(f"Error ejecutando compra: {e}")
-        return False
-
-# Función mejorada para ejecutar operación de venta
-def ejecutar_venta(operacion, precio_venta):
-    """Ejecutar operación de venta con logging"""
-    try:
-        ganancia_perdida = (precio_venta - operacion['precio_entrada']) * operacion['cantidad_cripto']
-        
-        # Mover de activas a historial
-        st.session_state.operaciones_activas = [op for op in st.session_state.operaciones_activas if op['id'] != operacion['id']]
-        
-        operacion_cerrada = operacion.copy()
-        operacion_cerrada.update({
-            'precio_salida': precio_venta,
-            'ganancia_perdida': ganancia_perdida,
-            'timestamp_cierre': datetime.now(),
-            'estado': 'CERRADA'
-        })
-        
-        st.session_state.historial_operaciones.append(operacion_cerrada)
-        st.session_state.capital += operacion['cantidad_usdt'] + ganancia_perdida
-        st.session_state.ultima_actualizacion = datetime.now()
-        
-        logger.info(f"Venta ejecutada: {operacion['symbol']} - Ganancia: ${ganancia_perdida:.2f}")
-        guardar_estado_bot()
-        return True
-    except Exception as e:
-        logger.error(f"Error ejecutando venta: {e}")
-        return False
-
-# Función principal de señales CORREGIDA - MÁS ESTRICTA
-def obtener_senal_compra_venta(df):
-    """
-    Obtener señal de compra o venta SOLO cuando se cumplen TODAS las condiciones
-    """
-    try:
-        if df is None or len(df) < 20:
-            return False, False, "Datos insuficientes", {}
-        
-        # Calcular indicadores
-        df['rsi'] = calcular_rsi(df)
-        df['bb_upper'], df['bb_middle'], df['bb_lower'] = calcular_bb(df)
-        df['stoch_k'], df['stoch_d'] = calcular_estocastico(df)
-        
-        # Obtener últimos valores
-        ultimo = df.iloc[-1]
-        
-        # DEBUG: Información de diagnóstico
-        debug_info = {
-            'precio': ultimo['close'],
-            'rsi': ultimo['rsi'],
-            'bb_upper': ultimo['bb_upper'],
-            'bb_lower': ultimo['bb_lower'],
-            'stoch_k': ultimo['stoch_k'],
-            'stoch_d': ultimo['stoch_d']
-        }
-        
-        # CONDICIONES DE COMPRA ESTRICTAS - DEBEN CUMPLIRSE TODAS
-        condicion_compra_rsi = (ultimo['rsi'] < 35)  # RSI menor a 35
-        condicion_compra_bb = (ultimo['close'] <= ultimo['bb_lower'])  # Precio en o por debajo de BB inferior
-        condicion_compra_stoch = (ultimo['stoch_k'] < 20 and ultimo['stoch_k'] > ultimo['stoch_d'])  # Estocástico oversold y creciente
-        
-        # Señal de compra SOLO si se cumplen TODAS las condiciones
-        senal_compra = condicion_compra_rsi and condicion_compra_bb and condicion_compra_stoch
-        
-        # CONDICIONES DE VENTA ESTRICTAS - DEBEN CUMPLIRSE TODAS
-        condicion_venta_rsi = (ultimo['rsi'] > 65)  # RSI mayor a 65
-        condicion_venta_bb = (ultimo['close'] >= ultimo['bb_upper'])  # Precio en o por encima de BB superior
-        condicion_venta_stoch = (ultimo['stoch_k'] > 80 and ultimo['stoch_k'] < ultimo['stoch_d'])  # Estocástico overbought y decreciente
-        
-        # Señal de venta SOLO si se cumplen TODAS las condiciones
-        senal_venta = condicion_venta_rsi and condicion_venta_bb and condicion_venta_stoch
-        
-        # Determinar mensaje de estado
-        if senal_compra:
-            mensaje = "🔵 SEÑAL DE COMPRA - TODAS LAS CONDICIONES CUMPLIDAS"
-        elif senal_venta:
-            mensaje = "🔴 SEÑAL DE VENTA - TODAS LAS CONDICIONES CUMPLIDAS"
-        else:
-            # Mostrar qué condiciones no se cumplen
-            condiciones_faltantes = []
-            if not condicion_compra_rsi and not condicion_venta_rsi:
-                condiciones_faltantes.append(f"RSI: {ultimo['rsi']:.1f}")
-            if not condicion_compra_bb and not condicion_venta_bb:
-                bb_pos = ((ultimo['close'] - ultimo['bb_lower']) / (ultimo['bb_upper'] - ultimo['bb_lower'])) * 100
-                condiciones_faltantes.append(f"BB: {bb_pos:.1f}%")
-            if not condicion_compra_stoch and not condicion_venta_stoch:
-                condiciones_faltantes.append(f"Stoch: {ultimo['stoch_k']:.1f}")
-            
-            mensaje = f"⚪ ESPERANDO - Condiciones: {', '.join(condiciones_faltantes)}"
-            
-        return senal_compra, senal_venta, mensaje, debug_info
-        
-    except Exception as e:
-        error_msg = f"Error en señales: {e}"
-        logger.error(error_msg)
-        return False, False, f"Error: {e}", {}
-
-# Función para crear gráfico
-def crear_grafico(df, senal_compra, senal_venta):
-    """Crear gráfico interactivo con Plotly"""
-    try:
-        fig = make_subplots(
-            rows=2, cols=1,
-            shared_xaxes=True,
-            vertical_spacing=0.1,
-            subplot_titles=('Precio y Bandas de Bollinger', 'RSI'),
-            row_heights=[0.7, 0.3]
-        )
-        
-        # Gráfico de precio y BB
-        fig.add_trace(
-            go.Scatter(x=df['timestamp'], y=df['close'], 
-                      name='Precio', line=dict(color='blue', width=1)),
-            row=1, col=1
-        )
-        
-        if 'bb_upper' in df.columns:
-            fig.add_trace(
-                go.Scatter(x=df['timestamp'], y=df['bb_upper'], 
-                          name='BB Superior', line=dict(color='red', width=1, dash='dash')),
-                row=1, col=1
-            )
-            fig.add_trace(
-                go.Scatter(x=df['timestamp'], y=df['bb_lower'], 
-                          name='BB Inferior', line=dict(color='green', width=1, dash='dash')),
-                row=1, col=1
-            )
-            
-            # Destacar señales en el gráfico
-            if senal_compra:
-                fig.add_annotation(x=df['timestamp'].iloc[-1], y=df['close'].iloc[-1],
-                                 text="🎯 COMPRA", showarrow=True, arrowhead=2,
-                                 bgcolor="green", font=dict(color="white", size=12),
-                                 row=1, col=1)
-            elif senal_venta:
-                fig.add_annotation(x=df['timestamp'].iloc[-1], y=df['close'].iloc[-1],
-                                 text="🎯 VENTA", showarrow=True, arrowhead=2,
-                                 bgcolor="red", font=dict(color="white", size=12),
-                                 row=1, col=1)
-        
-        # Gráfico de RSI
-        if 'rsi' in df.columns:
-            fig.add_trace(
-                go.Scatter(x=df['timestamp'], y=df['rsi'], 
-                          name='RSI', line=dict(color='purple', width=1)),
-                row=2, col=1
-            )
-        
-        # Líneas de referencia RSI
-        fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
-        fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
-        fig.add_hline(y=50, line_dash="dot", line_color="gray", row=2, col=1)
-        
-        # Actualizar layout
-        fig.update_layout(
-            height=600,
-            showlegend=True,
-            title_text="Análisis Técnico en Tiempo Real - MEXC"
-        )
-        
-        return fig
-    except Exception as e:
-        st.error(f"Error creando gráfico: {e}")
-        return None
-
-# Función para alternar el estado del bot con persistencia
-def toggle_bot():
-    """Alternar entre ejecución y detención del bot"""
-    st.session_state.bot_activo = not st.session_state.bot_activo
-    st.session_state.ultima_actualizacion = datetime.now()
-    
-    estado = "ACTIVADO" if st.session_state.bot_activo else "DETENIDO"
-    logger.info(f"Bot {estado}")
-    guardar_estado_bot()
-
-# Función para forzar sincronización
-def sincronizar_estado():
-    """Forzar sincronización del estado del bot"""
-    cargar_estado_bot()
-    st.session_state.ultima_actualizacion = datetime.now()
-    st.success("✅ Estado sincronizado correctamente")
-    logger.info("Estado del bot sincronizado")
-
-# Interfaz principal CORREGIDA
-def main():
-    try:
-        # Sidebar para controles
-        st.sidebar.title("⚙️ Configuración MEXC")
-        
-        # Botón de sincronización
-        if st.sidebar.button("🔄 Sincronizar Estado", use_container_width=True):
-            sincronizar_estado()
-        
-        # Botón de ejecución/detención MEJORADO
-        st.sidebar.markdown("---")
-        st.sidebar.subheader("🎮 Control del Bot")
-        
-        boton_texto = "⏹️ Detener Bot" if st.session_state.bot_activo else "▶️ Ejecutar Bot"
-        boton_color = "secondary" if st.session_state.bot_activo else "primary"
-        
-        if st.sidebar.button(boton_texto, type=boton_color, use_container_width=True):
-            toggle_bot()
-        
-        # Indicador de estado del bot MEJORADO
-        if st.session_state.bot_activo:
-            st.sidebar.success("✅ Bot EJECUTÁNDOSE")
-            st.sidebar.info(f"🕒 Última actualización: {st.session_state.ultima_actualizacion.strftime('%H:%M:%S')}")
-        else:
-            st.sidebar.warning("⏸️ Bot DETENIDO")
-        
-        # Selector de símbolo
-        simbolo = st.sidebar.selectbox(
-            "Seleccionar Par",
-            ['BTCUSDT', 'ETHUSDT', 'ADAUSDT', 'DOTUSDT', 'LINKUSDT', 'ATOMUSDT', 'NEARUSDT', 'APTUSDT']
-        )
-        
-        # Selector de intervalo
-        intervalo = st.sidebar.selectbox(
-            "Intervalo",
-            ['1m', '5m', '15m', '1h', '4h']
-        )
-        
-        # Configuración de trading CORREGIDA - Evitar error del slider
-        st.sidebar.markdown("---")
-        st.sidebar.subheader("💰 Configuración de Trading")
-        
-        # Corregir el error del slider - asegurar que min_value < max_value
-        capital_actual = max(0.1, st.session_state.capital)  # Asegurar mínimo 0.1
-        cantidad_default = min(50.0, capital_actual)
-        
-        cantidad_operacion = st.sidebar.slider(
-            "Cantidad por operación (USDT)",
-            min_value=10.0,
-            max_value=float(capital_actual),
-            value=float(cantidad_default),
-            step=5.0
-        )
-        
-        # Configuración de estrategia
-        st.sidebar.markdown("---")
-        st.sidebar.subheader("🎯 Estrategia de Trading")
-        
-        st.sidebar.info("""
-        **Condiciones de Compra (TODAS deben cumplirse):**
-        - RSI < 35
-        - Precio ≤ Banda Inferior BB
-        - Estocástico K < 20 y creciente
-        """)
-        
-        st.sidebar.info("""
-        **Condiciones de Venta (TODAS deben cumplirse):**
-        - RSI > 65  
-        - Precio ≥ Banda Superior BB
-        - Estocástico K > 80 y decreciente
-        """)
-        
-        # Información de diagnóstico
-        st.sidebar.markdown("---")
-        st.sidebar.subheader("🔍 Diagnóstico")
-        
-        if st.session_state.errores_conexion > 0:
-            st.sidebar.error(f"Errores de conexión: {st.session_state.errores_conexion}")
-        
-        st.sidebar.info(f"Operaciones activas: {len(st.session_state.operaciones_activas)}")
-        
-        # Botón para actualizar
-        if st.sidebar.button("🔄 Actualizar Datos MEXC", use_container_width=True):
-            st.rerun()
-        
-        # Obtener datos de MEXC
-        with st.spinner('Obteniendo datos de MEXC...'):
-            df = obtener_datos_mexc(symbol=simbolo, interval=intervalo, limit=50)
-        
-        if df is not None and len(df) > 0:
-            # Calcular señales
-            senal_compra, senal_venta, mensaje, debug_info = obtener_senal_compra_venta(df)
-            precio_actual = df['close'].iloc[-1]
-            
-            # Mostrar información de capital y operaciones
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.metric(
-                    "💰 Capital Disponible", 
-                    f"${st.session_state.capital:.2f}",
-                    delta=None
-                )
-            
-            with col2:
-                st.metric(
-                    "📈 Operaciones Activas", 
-                    f"{len(st.session_state.operaciones_activas)}",
-                    delta=None
-                )
-            
-            with col3:
-                ganancia_total = sum(op.get('ganancia_perdida', 0) for op in st.session_state.historial_operaciones)
-                color_ganancia = "normal" if ganancia_total >= 0 else "inverse"
-                st.metric(
-                    "🎯 Ganancia/Pérdida Total", 
-                    f"${ganancia_total:.2f}",
-                    delta=None,
-                    delta_color=color_ganancia
-                )
-            
-            with col4:
-                estado_bot = "🟢 EJECUTANDO" if st.session_state.bot_activo else "🔴 DETENIDO"
-                st.metric("Estado del Bot", estado_bot)
-            
-            # Mostrar estado de señales CORREGIDO - Solo ejecutar cuando hay señal verdadera
-            st.markdown("---")
-            col5, col6 = st.columns(2)
-            
-            with col5:
-                if senal_compra:
-                    st.success("🎯 SEÑAL: COMPRA - CONDICIONES CUMPLIDAS")
-                    # Ejecutar compra automáticamente solo si el bot está activo Y hay señal verdadera
-                    if (st.session_state.bot_activo and 
-                        st.session_state.capital >= cantidad_operacion and 
-                        len(st.session_state.operaciones_activas) < 3):
-                        
-                        if ejecutar_compra(simbolo, precio_actual, cantidad_operacion):
-                            st.success(f"✅ Compra ejecutada: {cantidad_operacion} USDT en {simbolo}")
-                            st.balloons()
-                        else:
-                            st.error("❌ Error ejecutando compra")
-                    elif st.session_state.bot_activo:
-                        st.info("ℹ️ Señal de compra detectada, pero el bot no puede ejecutar (sin capital o límite alcanzado)")
-                elif senal_venta:
-                    st.error("🎯 SEÑAL: VENTA - CONDICIONES CUMPLIDAS")
-                    # Cerrar operaciones activas si hay señal de venta y el bot está activo
-                    if st.session_state.bot_activo:
-                        operaciones_cerradas = 0
-                        for operacion in st.session_state.operaciones_activas[:]:
-                            if operacion['symbol'] == simbolo:
-                                if ejecutar_venta(operacion, precio_actual):
-                                    operaciones_cerradas += 1
-                                    st.success(f"✅ Venta ejecutada para {operacion['symbol']}")
-                        if operaciones_cerradas == 0:
-                            st.info("ℹ️ Señal de venta detectada, pero no hay operaciones activas para cerrar")
-                else:
-                    st.info("🎯 SIN SEÑAL - Esperando que se cumplan todas las condiciones")
-            
-            with col6:
-                st.metric("Precio Actual", f"${precio_actual:.4f}")
-                st.metric("Última Actualización", 
-                         df['timestamp'].iloc[-1].strftime('%H:%M:%S'))
-            
-            st.markdown(f"### 📊 {mensaje}")
-            
-            # Mostrar información de diagnóstico
-            with st.expander("🔍 Información de Diagnóstico"):
-                st.write("**Valores actuales de los indicadores:**")
-                st.write(f"- RSI: {debug_info.get('rsi', 'N/A'):.2f}")
-                st.write(f"- Precio: ${debug_info.get('precio', 'N/A'):.4f}")
-                st.write(f"- BB Superior: ${debug_info.get('bb_upper', 'N/A'):.4f}")
-                st.write(f"- BB Inferior: ${debug_info.get('bb_lower', 'N/A'):.4f}")
-                st.write(f"- Estocástico K: {debug_info.get('stoch_k', 'N/A'):.2f}")
-                st.write(f"- Estocástico D: {debug_info.get('stoch_d', 'N/A'):.2f}")
+        while True:
+            try:
+                # Obtener datos de mercado
+                tick_data = self.get_ticker_price()
+                if not tick_data:
+                    time.sleep(0.2)
+                    continue
                 
-                if st.session_state.bot_activo:
-                    st.success("✅ Bot listo para operar cuando se cumplan las condiciones")
-                else:
-                    st.warning("⏸️ Bot en pausa - Actívalo para operar")
-            
-            st.markdown("---")
-            
-            # Mostrar gráfico
-            fig = crear_grafico(df, senal_compra, senal_venta)
-            if fig:
-                st.plotly_chart(fig, use_container_width=True)
-            
-            # Resto del código sin cambios...
-            # Mostrar datos técnicos
-            st.subheader("📈 Datos Técnicos MEXC")
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                if 'rsi' in df.columns:
-                    rsi_actual = df['rsi'].iloc[-1]
-                    delta_color_rsi = "inverse" if rsi_actual > 70 else "normal" if rsi_actual < 30 else "off"
-                    st.metric("RSI", f"{rsi_actual:.2f}", delta=None, delta_color=delta_color_rsi)
-            
-            with col2:
-                if 'stoch_k' in df.columns:
-                    stoch_actual = df['stoch_k'].iloc[-1]
-                    delta_color_stoch = "inverse" if stoch_actual > 80 else "normal" if stoch_actual < 20 else "off"
-                    st.metric("Estocástico K", f"{stoch_actual:.2f}", delta=None, delta_color=delta_color_stoch)
-            
-            with col3:
-                if 'bb_upper' in df.columns:
-                    precio_actual = df['close'].iloc[-1]
-                    bb_upper = df['bb_upper'].iloc[-1]
-                    bb_lower = df['bb_lower'].iloc[-1]
-                    if bb_upper != bb_lower:
-                        pos_bb = ((precio_actual - bb_lower) / (bb_upper - bb_lower)) * 100
-                        st.metric("Posición BB", f"{pos_bb:.1f}%")
-                    else:
-                        st.metric("Posición BB", "N/A")
-            
-            with col4:
-                volumen_actual = df['volume'].iloc[-1]
-                volumen_promedio = df['volume'].tail(20).mean()
-                if volumen_promedio > 0:
-                    cambio_volumen = ((volumen_actual - volumen_promedio) / volumen_promedio) * 100
-                    st.metric("Volumen vs Promedio", f"{cambio_volumen:.1f}%")
-                else:
-                    st.metric("Volumen", f"{volumen_actual:.2f}")
-            
-            # Mostrar operaciones activas
-            if st.session_state.operaciones_activas:
-                st.subheader("📊 Operaciones Activas")
-                for operacion in st.session_state.operaciones_activas:
-                    if operacion['symbol'] == simbolo:
-                        with st.expander(f"{operacion['tipo']} - {operacion['symbol']} - {operacion['timestamp'].strftime('%H:%M:%S')}"):
-                            col1, col2, col3 = st.columns(3)
-                            with col1:
-                                st.write(f"**Precio entrada:** ${operacion['precio_entrada']:.4f}")
-                                st.write(f"**Precio actual:** ${precio_actual:.4f}")
-                            with col2:
-                                st.write(f"**Cantidad:** {operacion['cantidad_cripto']:.6f}")
-                                st.write(f"**Invertido:** ${operacion['cantidad_usdt']:.2f}")
-                            with col3:
-                                ganancia_actual = (precio_actual - operacion['precio_entrada']) * operacion['cantidad_cripto']
-                                porcentaje_ganancia = (ganancia_actual / operacion['cantidad_usdt']) * 100
-                                color_ganancia = "green" if ganancia_actual >= 0 else "red"
-                                st.write(f"**Ganancia actual:** <span style='color:{color_ganancia}'>${ganancia_actual:.2f} ({porcentaje_ganancia:.1f}%)</span>", 
-                                        unsafe_allow_html=True)
-            
-            # Mostrar historial de operaciones
-            st.subheader("📋 Historial de Operaciones del Bot")
-            if st.session_state.historial_operaciones:
-                # Crear DataFrame del historial
-                historial_df = pd.DataFrame(st.session_state.historial_operaciones)
-                historial_df['timestamp']
+                self.tick_data.append(tick_data)
+                
+                # Calcular indicadores
+                indicators = self.calculate_indicators()
+                
+                # Aplicar estrategias si tenemos suficientes datos
+                if len(self.tick_data) >= self.volatility_lookback:
+                    # Estrategia principal de scalping
+                    signal = self.scalping_strategy(indicators)
+                    
+                    # Estrategia secundaria de market making
+                    if signal == 'hold':
+                        signal = self.market_making_strategy(
+                            indicators, 
+                            tick_data['bid'], 
+                            tick_data['ask']
+                        )
+                    
+                    # Ejecutar trade si hay señal
+                    if signal != 'hold':
+                        price = tick_data['bid'] if signal == 'buy' else tick_data['ask']
+                        self.execute_trade(signal, price)
+                
+                # Gestión de riesgo
+                self.risk_management()
+                
+                # Intervalo entre operaciones (ajustable para HFT)
+                time.sleep(0.3)  # ~3 operaciones por segundo
+                
+            except Exception as e:
+                self.logger.error(f"Error en ciclo de trading: {e}")
+                time.sleep(1)
+
+    def start_trading(self):
+        """Iniciar bot de trading HFT en MEXC"""
+        self.logger.info("Iniciando Bot de Alta Frecuencia en MEXC")
+        
+        # Verificar conexión y balance
+        balance = self.get_account_balance()
+        if balance > 0:
+            self.balance = balance
+            self.logger.info(f"Balance inicial: {balance} USDT")
+        else:
+            self.logger.warning("Balance insuficiente o error de conexión")
+        
+        # Iniciar ciclo de trading en hilo separado
+        trading_thread = threading.Thread(target=self.trading_cycle)
+        trading_thread.daemon = True
+        trading_thread.start()
+
+    def get_performance_report(self) -> str:
+        """Generar reporte de desempeño"""
+        if not self.positions_history:
+            return "No hay operaciones realizadas aún"
+        
+        df = pd.DataFrame(self.positions_history)
+        total_trades = len(df)
+        
+        # Calcular métricas
+        buy_trades = df[df['action'] == 'buy']
+        sell_trades = df[df['action'] == 'sell']
+        
+        win_rate = 0
+        if len(sell_trades) > 0:
+            profitable_trades = len([1 for i in range(1, len(self.positions_history)) 
+                                  if self.positions_history[i]['action'] == 'sell' and
+                                  self.positions_history[i]['price'] > self.positions_history[i-1]['price']])
+            win_rate = (profitable_trades / len(sell_trades)) * 100
+        
+        return f"""
+        🤖 REPORTE HFT MEXC 🤖
+        ───────────────────
+        • Símbolo: {self.symbol}
+        • Total Órdenes: {total_trades}
+        • Tasa de Acierto: {win_rate:.1f}%
+        • Balance: {self.balance:.2f} USDT
+        • Posición Actual: {self.position:.6f}
+        • Posiciones Abiertas: {self.open_positions}
+        • Última Actualización: {datetime.now().strftime('%H:%M:%S')}
+        ───────────────────
+        """
+
+# Configuración y uso
+if __name__ == "__main__":
+    # Credenciales de MEXC (¡MANTENER SEGURAS!)
+    MEXC_API_KEY = "tu_api_key_de_mexc"
+    MEXC_SECRET_KEY = "tu_secret_key_de_mexc"
+    
+    # Símbolos populares en MEXC
+    SYMBOL = "BTCUSDT"  # También: ETHUSDT, SOLUSDT, etc.
+    
+    # Inicializar bot
+    bot = MexcHighFrequencyTradingBot(
+        api_key=MEXC_API_KEY,
+        secret_key=MEXC_SECRET_KEY,
+        symbol=SYMBOL
+    )
+    
+    # Iniciar trading
+    bot.start_trading()
+    
+    # Loop principal para monitoreo
+    try:
+        while True:
+            time.sleep(30)  # Reporte cada 30 segundos
+            print(bot.get_performance_report())
+            print("⏳ Ejecutando estrategias HFT...")
+    except KeyboardInterrupt:
+        print("\n🛑 Bot detenido por el usuario")
