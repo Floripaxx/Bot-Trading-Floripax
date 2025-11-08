@@ -11,7 +11,6 @@ import requests
 import json
 import plotly.graph_objects as go
 import os
-import pickle
 
 # Configurar la página de Streamlit
 st.set_page_config(
@@ -56,10 +55,19 @@ class MexcHighFrequencyTradingBot:
             'total_profit': self.total_profit
         }
         try:
+            # Convertir objetos datetime a string para JSON
+            for pos in state['positions_history']:
+                if isinstance(pos['timestamp'], datetime):
+                    pos['timestamp'] = pos['timestamp'].isoformat()
+            
+            for tick in state['tick_data']:
+                if isinstance(tick['timestamp'], datetime):
+                    tick['timestamp'] = tick['timestamp'].isoformat()
+                    
             with open('bot_state.json', 'w') as f:
                 json.dump(state, f, default=str, indent=2)
         except Exception as e:
-            self.log_message(f"Error guardando estado: {e}", "ERROR")
+            print(f"Error guardando estado: {e}")
     
     def load_state(self):
         """Cargar estado desde archivo JSON"""
@@ -71,13 +79,21 @@ class MexcHighFrequencyTradingBot:
                 # Convertir deque de tick_data
                 tick_data = deque(maxlen=50)
                 for tick in state.get('tick_data', []):
-                    tick['timestamp'] = datetime.fromisoformat(tick['timestamp'])
+                    if 'timestamp' in tick:
+                        try:
+                            tick['timestamp'] = datetime.fromisoformat(tick['timestamp'].replace('Z', '+00:00'))
+                        except:
+                            tick['timestamp'] = datetime.now()
                     tick_data.append(tick)
                 
                 # Convertir timestamps en positions_history
                 positions_history = []
                 for pos in state.get('positions_history', []):
-                    pos['timestamp'] = datetime.fromisoformat(pos['timestamp'])
+                    if 'timestamp' in pos:
+                        try:
+                            pos['timestamp'] = datetime.fromisoformat(pos['timestamp'].replace('Z', '+00:00'))
+                        except:
+                            pos['timestamp'] = datetime.now()
                     positions_history.append(pos)
                 
                 self.bot_data = {
@@ -105,7 +121,7 @@ class MexcHighFrequencyTradingBot:
                     'total_profit': 0
                 }
         except Exception as e:
-            self.log_message(f"Error cargando estado: {e}", "ERROR")
+            print(f"Error cargando estado: {e}")
             # Estado inicial por defecto
             self.bot_data = {
                 'cash_balance': 250.0,
@@ -194,7 +210,96 @@ class MexcHighFrequencyTradingBot:
             self.log_messages.pop(0)
         self.save_state()
 
-    # ... (los métodos get_real_price_from_api, get_binance_price, get_realistic_price se mantienen igual)
+    def get_real_price_from_api(self) -> dict:
+        """Obtener precio REAL de MEXC"""
+        try:
+            url = f"https://api.mexc.com/api/v3/ticker/price"
+            params = {'symbol': self.symbol}
+            
+            response = requests.get(url, params=params, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if 'price' in data:
+                    current_price = float(data['price'])
+                    spread = current_price * 0.0001
+                    
+                    return {
+                        'timestamp': datetime.now(),
+                        'bid': current_price - spread,
+                        'ask': current_price + spread,
+                        'symbol': self.symbol,
+                        'simulated': False,
+                        'source': 'MEXC Real'
+                    }
+            
+            return self.get_binance_price()
+            
+        except Exception as e:
+            self.log_message(f"Error obteniendo precio real: {e}", "ERROR")
+            return self.get_binance_price()
+
+    def get_binance_price(self) -> dict:
+        """Obtener precio de Binance como backup"""
+        try:
+            url = "https://api.binance.com/api/v3/ticker/price"
+            params = {'symbol': self.symbol}
+            
+            response = requests.get(url, params=params, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if 'price' in data:
+                    current_price = float(data['price'])
+                    spread = current_price * 0.0001
+                    
+                    return {
+                        'timestamp': datetime.now(),
+                        'bid': current_price - spread,
+                        'ask': current_price + spread,
+                        'symbol': self.symbol,
+                        'simulated': False,
+                        'source': 'Binance Backup'
+                    }
+            
+            return self.get_realistic_price()
+            
+        except Exception as e:
+            self.log_message(f"Error obteniendo precio de Binance: {e}", "ERROR")
+            return self.get_realistic_price()
+
+    def get_realistic_price(self) -> dict:
+        """Generar precio realista"""
+        base_prices = {
+            'BTCUSDT': 100000,
+            'ETHUSDT': 3500,
+            'ADAUSDT': 0.45,
+            'DOTUSDT': 7.5,
+            'LINKUSDT': 15.0
+        }
+        
+        base_price = base_prices.get(self.symbol, 50000)
+        variation = np.random.uniform(-0.02, 0.02)
+        current_price = base_price * (1 + variation)
+        spread = current_price * 0.0001
+        
+        return {
+            'timestamp': datetime.now(),
+            'bid': current_price - spread,
+            'ask': current_price + spread,
+            'symbol': self.symbol,
+            'simulated': True,
+            'source': 'Realistic Simulation'
+        }
+
+    def get_ticker_price(self) -> dict:
+        """Obtener precio actual"""
+        try:
+            real_data = self.get_real_price_from_api()
+            return real_data
+        except Exception as e:
+            self.log_message(f"Error crítico obteniendo precio: {e}", "ERROR")
+            return self.get_realistic_price()
 
     def calculate_indicators(self) -> dict:
         """Calcular indicadores técnicos OPTIMIZADOS"""
@@ -308,6 +413,12 @@ class MexcHighFrequencyTradingBot:
     def execute_trade(self, action: str, price: float):
         """Ejecutar operación - OPTIMIZADA PARA MAYORES GANANCIAS"""
         try:
+            investment_amount = 0
+            quantity = 0
+            quantity_to_sell = 0
+            sale_amount = 0
+            profit_loss = 0
+            
             if action == 'buy':
                 if self.open_positions < self.max_positions:
                     # Inversión más grande (15% del balance)
@@ -363,7 +474,98 @@ class MexcHighFrequencyTradingBot:
         except Exception as e:
             self.log_message(f"Error ejecutando trade: {e}", "ERROR")
 
-    # ... (los demás métodos se mantienen similares)
+    def close_all_positions(self):
+        """Cerrar todas las posiciones abiertas"""
+        if self.position > 0 and self.tick_data:
+            tick_data = list(self.tick_data)[-1] if self.tick_data else self.get_ticker_price()
+            price = tick_data['ask']
+            self.execute_trade('sell', price)
+            self.log_message("🧹 TODAS las posiciones cerradas", "INFO")
+
+    def reset_account(self):
+        """Reiniciar cuenta a estado inicial"""
+        self.cash_balance = 250.0
+        self.position = 0
+        self.entry_price = 0
+        self.positions_history.clear()
+        self.open_positions = 0
+        self.log_messages.clear()
+        self.tick_data.clear()
+        self.total_profit = 0
+        self.log_message("🔄 Cuenta reiniciada a $250.00", "INFO")
+
+    def trading_cycle(self):
+        """Ciclo principal de trading"""
+        self.log_message("🚀 Iniciando ciclo de trading HFT - ESTRATEGIA OPTIMIZADA")
+        
+        while self.is_running:
+            try:
+                tick_data = self.get_ticker_price()
+                if tick_data:
+                    self.tick_data.append(tick_data)
+                
+                indicators = self.calculate_indicators()
+                
+                if indicators and len(self.tick_data) >= 10:
+                    signal = self.trading_strategy(indicators)
+                    if signal != 'hold':
+                        price = tick_data['bid'] if signal == 'buy' else tick_data['ask']
+                        self.execute_trade(signal, price)
+                
+                time.sleep(2)
+                
+            except Exception as e:
+                self.log_message(f"Error en ciclo de trading: {e}", "ERROR")
+                time.sleep(5)
+
+    def start_trading(self):
+        """Iniciar bot de trading"""
+        if not self.is_running:
+            self.is_running = True
+            self.trading_thread = threading.Thread(target=self.trading_cycle, daemon=True)
+            self.trading_thread.start()
+            self.log_message("✅ Bot de trading iniciado - ESTRATEGIA AGRESIVA ACTIVADA")
+
+    def stop_trading(self):
+        """Detener bot de trading"""
+        self.is_running = False
+        self.log_message("⏹️ Bot de trading detenido")
+
+    def get_performance_stats(self):
+        """Obtener estadísticas de performance"""
+        current_price = list(self.tick_data)[-1]['bid'] if self.tick_data else 0
+        position_value = self.position * current_price
+        total_equity = self.cash_balance + position_value
+        total_profit = total_equity - 250.0
+        
+        stats = {
+            'total_trades': len(self.positions_history),
+            'win_rate': 0,
+            'cash_balance': self.cash_balance,
+            'position_value': position_value,
+            'total_equity': total_equity,
+            'open_positions': self.open_positions,
+            'current_price': current_price,
+            'total_profit': total_profit,
+            'position_size': self.position,
+            'realized_profit': self.total_profit
+        }
+        
+        if not self.positions_history:
+            return stats
+        
+        # Calcular win rate
+        sell_trades = [t for t in self.positions_history if t['action'] == 'sell']
+        
+        if sell_trades:
+            profitable_trades = 0
+            for trade in self.positions_history:
+                if trade['action'] == 'sell' and trade.get('profit_loss', 0) > 0:
+                    profitable_trades += 1
+            
+            stats['win_rate'] = (profitable_trades / len(sell_trades)) * 100 if sell_trades else 0
+        
+        return stats
 
 def main():
     st.title("🤖 Bot HFT MEXC - VERSIÓN OPTIMIZADA 🚀")
@@ -404,6 +606,10 @@ def main():
         if st.button("🧹 Cerrar Todas las Posiciones", use_container_width=True):
             bot.close_all_positions()
             st.rerun()
+            
+        if st.button("🔄 Reiniciar Cuenta", use_container_width=True):
+            bot.reset_account()
+            st.rerun()
         
         st.markdown("---")
         st.header("💰 Estadísticas Clave")
@@ -415,8 +621,154 @@ def main():
             st.success("✅ Bot Ejecutándose - ESTRATEGIA AGRESIVA")
         else:
             st.warning("⏸️ Bot Detenido")
+            
+        if bot.tick_data:
+            latest_tick = list(bot.tick_data)[-1]
+            source = latest_tick.get('source', 'Unknown')
+            st.info(f"**Fuente:** {source}")
 
-    # ... (el resto del main se mantiene similar)
+    # Layout principal
+    col1, col2, col3, col4 = st.columns(4)
+    
+    stats = bot.get_performance_stats()
+    
+    with col1:
+        st.metric(
+            label="💰 Cash Disponible",
+            value=f"${stats['cash_balance']:.2f}",
+            delta=f"${stats['realized_profit']:.2f}" if stats['realized_profit'] != 0 else None
+        )
+    
+    with col2:
+        st.metric(
+            label="📈 Precio Actual",
+            value=f"${stats['current_price']:.2f}"
+        )
+    
+    with col3:
+        st.metric(
+            label="🎯 Tasa de Acierto",
+            value=f"{stats['win_rate']:.1f}%"
+        )
+    
+    with col4:
+        st.metric(
+            label="📊 Total Operaciones",
+            value=f"{stats['total_trades']}"
+        )
+    
+    # Segunda fila de métricas
+    col5, col6, col7, col8 = st.columns(4)
+    
+    with col5:
+        st.metric(
+            label="🔓 Posiciones Abiertas",
+            value=f"{stats['open_positions']}"
+        )
+    
+    with col6:
+        st.metric(
+            label="📦 Tamaño Posición",
+            value=f"{stats['position_size']:.6f}"
+        )
+    
+    with col7:
+        st.metric(
+            label="💹 Equity Total",
+            value=f"${stats['total_equity']:.2f}"
+        )
+    
+    with col8:
+        status = "🟢 LIVE" if bot.is_running else "🔴 STOP"
+        st.metric(
+            label="🔴 Estado",
+            value=status
+        )
+    
+    st.markdown("---")
+    
+    # Gráficos y datos
+    tab1, tab2, tab3 = st.tabs(["📈 Gráfico de Precios", "📋 Historial de Operaciones", "📝 Logs del Sistema"])
+    
+    with tab1:
+        if bot.tick_data:
+            prices = [tick['bid'] for tick in list(bot.tick_data)]
+            timestamps = [tick['timestamp'] for tick in list(bot.tick_data)]
+            
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=timestamps, 
+                y=prices,
+                mode='lines',
+                name=f'Precio {bot.symbol}',
+                line=dict(color='#00ff88', width=2)
+            ))
+            
+            if len(prices) >= 10:
+                df = pd.DataFrame(prices, columns=['price'])
+                df['sma_10'] = df['price'].rolling(10).mean()
+                fig.add_trace(go.Scatter(
+                    x=timestamps[9:],
+                    y=df['sma_10'].dropna(),
+                    mode='lines',
+                    name='SMA 10',
+                    line=dict(color='#ffaa00', width=1, dash='dash')
+                ))
+            
+            fig.update_layout(
+                title=f"Precio de {bot.symbol} en Tiempo Real",
+                xaxis_title="Tiempo",
+                yaxis_title="Precio (USD)",
+                template="plotly_dark",
+                height=400
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Esperando datos de mercado...")
+    
+    with tab2:
+        if bot.positions_history:
+            df = pd.DataFrame(bot.positions_history)
+            df['timestamp'] = df['timestamp'].dt.strftime('%H:%M:%S')
+            df['price'] = df['price'].apply(lambda x: f"${x:.2f}")
+            df['quantity'] = df['quantity'].apply(lambda x: f"{x:.6f}")
+            df['cash_balance'] = df['cash_balance'].apply(lambda x: f"${x:.2f}")
+            df['total_equity'] = df['total_equity'].apply(lambda x: f"${x:.2f}")
+            
+            st.dataframe(
+                df[['timestamp', 'action', 'price', 'quantity', 'cash_balance', 'total_equity', 'open_positions']],
+                use_container_width=True,
+                height=400
+            )
+        else:
+            st.info("No hay operaciones registradas aún.")
+    
+    with tab3:
+        log_container = st.container(height=400)
+        with log_container:
+            for log_entry in reversed(bot.log_messages[-20:]):
+                if "ERROR" in log_entry:
+                    st.error(log_entry)
+                elif "TRADE" in log_entry:
+                    if "COMPRA" in log_entry:
+                        st.success(log_entry)
+                    elif "VENTA" in log_entry:
+                        if "🔴" in log_entry:
+                            st.error(log_entry)
+                        else:
+                            st.success(log_entry)
+                    else:
+                        st.info(log_entry)
+                elif "SEÑAL" in log_entry or "PROFIT" in log_entry or "LOSS" in log_entry:
+                    st.warning(log_entry)
+                else:
+                    st.info(log_entry)
+    
+    # Auto-refresh
+    if bot.is_running:
+        time.sleep(5)
+        st.rerun()
 
 if __name__ == "__main__":
     main()
