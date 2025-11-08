@@ -57,88 +57,112 @@ class MexcHighFrequencyTradingBot:
         if len(self.log_messages) > 50:
             self.log_messages.pop(0)
 
-    def generate_signature(self, params: dict) -> str:
-        """Generar firma para API de MEXC"""
-        query_string = '&'.join([f"{k}={v}" for k, v in sorted(params.items())])
-        return hmac.new(
-            self.secret_key.encode('utf-8'),
-            query_string.encode('utf-8'),
-            hashlib.sha256
-        ).hexdigest()
-
-    def mexc_request(self, endpoint: str, method: str = 'GET', params: dict = None) -> dict:
-        """Realizar petición a la API de MEXC"""
+    def get_real_price_from_api(self) -> dict:
+        """Obtener precio REAL de MEXC sin necesidad de API keys"""
         try:
-            url = f"{self.base_url}{endpoint}"
-            headers = {
-                'X-MEXC-APIKEY': self.api_key,
-                'Content-Type': 'application/json'
-            }
+            # Usar endpoint público que no requiere autenticación
+            url = f"https://api.mexc.com/api/v3/ticker/price"
+            params = {'symbol': self.symbol}
             
-            if params is None:
-                params = {}
-                
-            if method == 'GET':
-                params['timestamp'] = int(time.time() * 1000)
-                params['signature'] = self.generate_signature(params)
-                response = requests.get(url, headers=headers, params=params, timeout=5)
-            else:
-                params['timestamp'] = int(time.time() * 1000)
-                params['signature'] = self.generate_signature(params)
-                response = requests.post(url, headers=headers, data=json.dumps(params), timeout=5)
+            response = requests.get(url, params=params, timeout=10)
             
-            return response.json()
+            if response.status_code == 200:
+                data = response.json()
+                if 'price' in data:
+                    current_price = float(data['price'])
+                    # Para el bid/ask, usar el precio actual con un pequeño spread
+                    spread = current_price * 0.0001  # 0.01% de spread
+                    
+                    return {
+                        'timestamp': datetime.now(),
+                        'bid': current_price - spread,
+                        'ask': current_price + spread,
+                        'symbol': self.symbol,
+                        'simulated': False,
+                        'source': 'MEXC Real'
+                    }
+            
+            # Si falla la API principal, intentar con Binance como backup
+            return self.get_binance_price()
+            
         except Exception as e:
-            self.log_message(f"Error en petición MEXC: {e}", "ERROR")
-            return {}
+            self.log_message(f"Error obteniendo precio real: {e}", "ERROR")
+            # Si todo falla, usar Binance
+            return self.get_binance_price()
+
+    def get_binance_price(self) -> dict:
+        """Obtener precio de Binance como backup"""
+        try:
+            url = "https://api.binance.com/api/v3/ticker/price"
+            params = {'symbol': self.symbol}
+            
+            response = requests.get(url, params=params, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if 'price' in data:
+                    current_price = float(data['price'])
+                    spread = current_price * 0.0001
+                    
+                    return {
+                        'timestamp': datetime.now(),
+                        'bid': current_price - spread,
+                        'ask': current_price + spread,
+                        'symbol': self.symbol,
+                        'simulated': False,
+                        'source': 'Binance Backup'
+                    }
+            
+            # Último recurso: datos realistas basados en precio actual aproximado
+            return self.get_realistic_price()
+            
+        except Exception as e:
+            self.log_message(f"Error obteniendo precio de Binance: {e}", "ERROR")
+            return self.get_realistic_price()
+
+    def get_realistic_price(self) -> dict:
+        """Generar precio realista basado en el mercado actual"""
+        # Precios base realistas para diferentes símbolos
+        base_prices = {
+            'BTCUSDT': 100000,  # Precio realista de BTC alrededor de 100k
+            'ETHUSDT': 3500,    # Precio realista de ETH
+            'ADAUSDT': 0.45,    # Precio realista de ADA
+            'DOTUSDT': 7.5,     # Precio realista de DOT
+            'LINKUSDT': 15.0    # Precio realista de LINK
+        }
+        
+        base_price = base_prices.get(self.symbol, 50000)
+        # Pequeña variación para simular mercado real
+        variation = np.random.uniform(-0.02, 0.02)  # ±2%
+        current_price = base_price * (1 + variation)
+        spread = current_price * 0.0001
+        
+        return {
+            'timestamp': datetime.now(),
+            'bid': current_price - spread,
+            'ask': current_price + spread,
+            'symbol': self.symbol,
+            'simulated': True,
+            'source': 'Realistic Simulation'
+        }
 
     def get_ticker_price(self) -> dict:
-        """Obtener precio actual de MEXC"""
+        """Obtener precio actual - SIEMPRE intentar precio real primero"""
         try:
-            # Si no hay API keys, usar datos simulados
-            if not self.api_key or not self.secret_key:
-                base_price = 50000 + np.random.uniform(-500, 500)
-                return {
-                    'timestamp': datetime.now(),
-                    'bid': base_price,
-                    'ask': base_price + 1.0,
-                    'symbol': self.symbol,
-                    'simulated': True
-                }
+            # Siempre intentar obtener precio real primero
+            real_data = self.get_real_price_from_api()
             
-            endpoint = '/api/v3/ticker/bookTicker'
-            params = {'symbol': self.symbol}
-            data = self.mexc_request(endpoint, params=params)
-            
-            if data and 'bidPrice' in data and 'askPrice' in data:
-                return {
-                    'timestamp': datetime.now(),
-                    'bid': float(data['bidPrice']),
-                    'ask': float(data['askPrice']),
-                    'symbol': self.symbol,
-                    'simulated': False
-                }
+            if real_data and not real_data.get('simulated', True):
+                self.log_message(f"✅ Precio real obtenido: ${real_data['bid']:.2f} desde {real_data.get('source', 'API')}", "INFO")
             else:
-                # Fallback a datos simulados
-                base_price = 50000 + np.random.uniform(-500, 500)
-                return {
-                    'timestamp': datetime.now(),
-                    'bid': base_price,
-                    'ask': base_price + 1.0,
-                    'symbol': self.symbol,
-                    'simulated': True
-                }
+                self.log_message(f"⚠️ Usando datos simulados: ${real_data['bid']:.2f}", "INFO")
+                
+            return real_data
+            
         except Exception as e:
-            self.log_message(f"Error obteniendo ticker: {e}", "ERROR")
-            # Datos simulados como fallback
-            base_price = 50000 + np.random.uniform(-500, 500)
-            return {
-                'timestamp': datetime.now(),
-                'bid': base_price,
-                'ask': base_price + 1.0,
-                'symbol': self.symbol,
-                'simulated': True
-            }
+            self.log_message(f"Error crítico obteniendo precio: {e}", "ERROR")
+            # Fallback a datos realistas
+            return self.get_realistic_price()
 
     def calculate_indicators(self) -> dict:
         """Calcular indicadores técnicos"""
@@ -244,10 +268,15 @@ class MexcHighFrequencyTradingBot:
         
         while self.is_running:
             try:
-                # Obtener datos de mercado
+                # Obtener datos de mercado REALES
                 tick_data = self.get_ticker_price()
                 if tick_data:
                     self.tick_data.append(tick_data)
+                    
+                    # Log cada 10 ticks para no saturar
+                    if len(self.tick_data) % 10 == 0:
+                        source = tick_data.get('source', 'Unknown')
+                        self.log_message(f"Precio actual: ${tick_data['bid']:.2f} | Fuente: {source}", "INFO")
                 
                 # Calcular indicadores y ejecutar estrategia
                 indicators = self.calculate_indicators()
@@ -258,7 +287,7 @@ class MexcHighFrequencyTradingBot:
                         price = tick_data['bid'] if signal == 'buy' else tick_data['ask']
                         self.execute_trade(signal, price)
                 
-                time.sleep(2)  # Intervalo de 2 segundos para HFT
+                time.sleep(3)  # Intervalo de 3 segundos para HFT
                 
             except Exception as e:
                 self.log_message(f"Error en ciclo de trading: {e}", "ERROR")
@@ -289,7 +318,7 @@ class MexcHighFrequencyTradingBot:
             'current_price': current_price,
             'total_profit': self.balance - 250.0,
             'equity': self.balance,
-            'position_size': self.position  # CORREGIDO: usar self.position en lugar de stats['position_size']
+            'position_size': self.position
         }
         
         if not self.positions_history:
@@ -333,9 +362,9 @@ def main():
         
         # Campos de configuración
         api_key = st.text_input("API Key MEXC", type="password", 
-                               help="Opcional - Si no se proporciona, se usarán datos simulados")
+                               help="Opcional - El bot funciona sin API keys usando datos reales de mercado")
         secret_key = st.text_input("Secret Key MEXC", type="password",
-                                  help="Opcional - Si no se proporciona, se usarán datos simulados")
+                                  help="Opcional - El bot funciona sin API keys usando datos reales de mercado")
         symbol = st.selectbox("Símbolo", ["BTCUSDT", "ETHUSDT", "ADAUSDT", "DOTUSDT", "LINKUSDT"])
         
         # Actualizar configuración del bot
@@ -367,6 +396,14 @@ def main():
             st.success("✅ Bot Ejecutándose")
         else:
             st.warning("⏸️ Bot Detenido")
+            
+        # Información de precios reales
+        st.markdown("---")
+        st.header("📊 Fuente de Precios")
+        if bot.tick_data:
+            latest_tick = bot.tick_data[-1]
+            source = latest_tick.get('source', 'Unknown')
+            st.info(f"**Fuente actual:** {source}")
     
     # Layout principal
     col1, col2, col3, col4 = st.columns(4)
@@ -409,7 +446,6 @@ def main():
         )
     
     with col6:
-        # CORREGIDO: Usar stats['position_size'] que ahora existe
         st.metric(
             label="📦 Tamaño Posición",
             value=f"{stats['position_size']:.6f}"
@@ -438,14 +474,16 @@ def main():
         if bot.tick_data:
             prices = [tick['bid'] for tick in list(bot.tick_data)]
             timestamps = [tick['timestamp'] for tick in list(bot.tick_data)]
+            sources = [tick.get('source', 'Unknown') for tick in list(bot.tick_data)]
             
             fig = go.Figure()
             fig.add_trace(go.Scatter(
                 x=timestamps, 
                 y=prices,
                 mode='lines',
-                name='Precio BTC',
-                line=dict(color='#00ff88', width=2)
+                name=f'Precio {bot.symbol}',
+                line=dict(color='#00ff88', width=2),
+                hovertemplate='<b>Precio:</b> $%{y:.2f}<br><b>Hora:</b> %{x}<br><b>Fuente:</b> ' + sources[-1] + '<extra></extra>'
             ))
             
             # Agregar SMA si hay suficientes datos
@@ -461,7 +499,7 @@ def main():
                 ))
             
             fig.update_layout(
-                title=f"Precio de {bot.symbol} en Tiempo Real",
+                title=f"Precio de {bot.symbol} en Tiempo Real - Fuente: {sources[-1] if sources else 'Unknown'}",
                 xaxis_title="Tiempo",
                 yaxis_title="Precio (USD)",
                 template="plotly_dark",
@@ -469,6 +507,15 @@ def main():
             )
             
             st.plotly_chart(fig, use_container_width=True)
+            
+            # Mostrar información de la fuente
+            latest_source = sources[-1] if sources else "Unknown"
+            if "MEXC" in latest_source:
+                st.success(f"✅ Usando datos en tiempo real de MEXC")
+            elif "Binance" in latest_source:
+                st.warning(f"⚠️ Usando datos de Binance (backup)")
+            else:
+                st.info(f"ℹ️ Usando datos simulados realistas")
         else:
             st.info("Esperando datos de mercado...")
     
@@ -513,6 +560,8 @@ def main():
                             st.success(log_entry)
                     else:
                         st.info(log_entry)
+                elif "Precio actual:" in log_entry:
+                    st.info(log_entry)
                 else:
                     st.info(log_entry)
         
