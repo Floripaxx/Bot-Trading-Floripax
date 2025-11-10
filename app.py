@@ -33,11 +33,11 @@ class MexcHighFrequencyTradingBot:
         # Configuración HFT OPTIMIZADA PARA MAYORES GANANCIAS
         self.position_size = 0.20  # MODIFICADO: 20% para mayores ganancias
         self.max_positions = 4     # MODIFICADO: 4 posiciones máximas
-        self.momentum_threshold = 0.0025  # AUMENTADO para señales más fuertes
-        self.mean_reversion_threshold = 0.002
+        self.momentum_threshold = 0.0035  # AUMENTADO: 0.35% para señales más fuertes
+        self.mean_reversion_threshold = 0.0025  # AUMENTADO ligeramente
         self.volatility_multiplier = 1.5
-        self.min_profit_target = 0.008  # MODIFICADO: 0.8% de ganancia mínima
-        self.max_loss_stop = 0.004     # MODIFICADO: 0.4% de stop loss
+        self.min_profit_target = 0.015  # MODIFICADO: 1.5% de ganancia mínima
+        self.max_loss_stop = 0.006     # MODIFICADO: 0.6% de stop loss
         
         self.trading_thread = None
         
