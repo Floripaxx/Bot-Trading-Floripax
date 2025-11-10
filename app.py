@@ -871,4 +871,70 @@ def main():
             for pos in bot.positions_history:
                 pnl = pos.get('profit_loss', 0)
                 pnl_color = "🟢" if pnl > 0 else "🔴" if pnl < 0 else "⚪"
-                pnl_text = f"{pnl_color} ${abs(pnl):.4f}"
+                pnl_text = f"{pnl_color} ${abs(pnl):.4f}" if pnl != 0 else "-"
+                
+                row = {
+                    'timestamp': pos['timestamp'].strftime('%H:%M:%S') if isinstance(pos['timestamp'], datetime) else str(pos['timestamp']),
+                    'acción': pos['action'],
+                    'precio': f"${pos['price']:.2f}",
+                    'cantidad': f"{pos['quantity']:.6f}",
+                    'cash': f"${pos['cash_balance']:.2f}",
+                    'equity': f"${pos['total_equity']:.2f}",
+                    'P/L': pnl_text,
+                    'posiciones': pos['open_positions']
+                }
+                display_data.append(row)
+            
+            df = pd.DataFrame(display_data)
+            st.dataframe(df, use_container_width=True, height=400)
+            
+            # Estadísticas adicionales
+            st.subheader("📈 Resumen de Performance")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Trades Totales", stats['total_trades'])
+            with col2:
+                st.metric("Ganancia Realizada", f"${stats['realized_profit']:.2f}")
+            with col3:
+                st.metric("Tasa de Acierto", f"{stats['win_rate']:.1f}%")
+                
+        else:
+            st.info("📭 No hay operaciones registradas aún.")
+    
+    with tab3:
+        st.subheader("📊 Estado del Sistema")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.info(f"**Trades realizados hoy:** {stats['daily_trade_count']}/{bot.max_daily_trades}")
+            st.info(f"**Posiciones abiertas:** {stats['open_positions']}/{bot.max_positions}")
+        with col2:
+            st.info(f"**Próximo trade disponible:** {'✅ Sí' if stats['daily_trades_left'] > 0 else '❌ No'}")
+            st.info(f"**Estado conexión:** {'✅ Conectado' if bot.tick_data and not bot.tick_data[-1].get('simulated', True) else '🔄 Simulado'}")
+        
+        log_container = st.container(height=400)
+        with log_container:
+            for log_entry in reversed(bot.log_messages[-20:]):
+                if "ERROR" in log_entry or "❌" in log_entry:
+                    st.error(log_entry)
+                elif "TRADE" in log_entry or "💰" in log_entry:
+                    if "COMPRA" in log_entry:
+                        st.success(log_entry)
+                    elif "VENTA" in log_entry:
+                        if "📉" in log_entry:
+                            st.error(log_entry)
+                        else:
+                            st.success(log_entry)
+                    else:
+                        st.info(log_entry)
+                elif "SEÑAL" in log_entry or "PROFIT" in log_entry or "LOSS" in log_entry:
+                    st.warning(log_entry)
+                else:
+                    st.info(log_entry)
+    
+    # Auto-refresh
+    if bot.is_running:
+        time.sleep(3)
+        st.rerun()
+
+if __name__ == "__main__":
+    main()
