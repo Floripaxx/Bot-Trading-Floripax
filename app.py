@@ -239,9 +239,42 @@ class MexcFuturesTradingBot:
         self.save_state()
 
     def get_real_price_from_api(self) -> dict:
-        """Obtener precio REAL de MEXC Futures"""
+        """Obtener precio REAL de MEXC Futures - CORREGIDO"""
         try:
-            # CORRECCIÓN: Endpoint correcto para futures de MEXC
+            # CORRECCIÓN: Endpoint correcto para el precio actual de futures
+            url = "https://contract.mexc.com/api/v1/contract/market_ticker"
+            params = {'symbol': self.symbol}
+            
+            response = requests.get(url, params=params, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                # CORRECCIÓN: Estructura correcta de la respuesta
+                if 'data' in data and data['data']:
+                    current_price = float(data['data']['lastPrice'])
+                    # CORRECCIÓN: Usar bid/ask reales en lugar de calcular spread
+                    bid_price = float(data['data']['bid1'])
+                    ask_price = float(data['data']['ask1'])
+                    
+                    return {
+                        'timestamp': datetime.now(),
+                        'bid': bid_price,
+                        'ask': ask_price,
+                        'symbol': self.symbol,
+                        'simulated': False,
+                        'source': 'MEXC Futures Real'
+                    }
+            
+            # Si falla, intentar con otro endpoint
+            return self.get_alternative_futures_price()
+            
+        except Exception as e:
+            self.log_message(f"Error obteniendo precio futures: {e}", "ERROR")
+            return self.get_alternative_futures_price()
+
+    def get_alternative_futures_price(self) -> dict:
+        """Endpoint alternativo para precio de futures"""
+        try:
             url = "https://contract.mexc.com/api/v1/contract/detail"
             params = {'symbol': self.symbol}
             
@@ -249,7 +282,6 @@ class MexcFuturesTradingBot:
             
             if response.status_code == 200:
                 data = response.json()
-                # CORRECCIÓN: Estructura correcta de la respuesta MEXC Futures
                 if 'data' in data and data['data']:
                     current_price = float(data['data']['lastPrice'])
                     spread = current_price * 0.0001
@@ -260,14 +292,13 @@ class MexcFuturesTradingBot:
                         'ask': current_price + spread,
                         'symbol': self.symbol,
                         'simulated': False,
-                        'source': 'MEXC Futures Real'
+                        'source': 'MEXC Futures Alternative'
                     }
             
-            # Fallback a precio de spot si futures falla
             return self.get_spot_price_fallback()
             
         except Exception as e:
-            self.log_message(f"Error obteniendo precio futures real: {e}", "ERROR")
+            self.log_message(f"Error obteniendo precio alternativo: {e}", "ERROR")
             return self.get_spot_price_fallback()
 
     def get_spot_price_fallback(self) -> dict:
@@ -329,28 +360,53 @@ class MexcFuturesTradingBot:
             return self.get_realistic_price()
 
     def get_realistic_price(self) -> dict:
-        """Generar precio realista"""
-        base_prices = {
-            'BTCUSDT': 105000,
-            'ETHUSDT': 3500,
-            'ADAUSDT': 0.45,
-            'DOTUSDT': 7.5,
-            'LINKUSDT': 15.0
-        }
-        
-        base_price = base_prices.get(self.symbol, 50000)
-        variation = np.random.uniform(-0.02, 0.02)
-        current_price = base_price * (1 + variation)
-        spread = current_price * 0.0001
-        
-        return {
-            'timestamp': datetime.now(),
-            'bid': current_price - spread,
-            'ask': current_price + spread,
-            'symbol': self.symbol,
-            'simulated': True,
-            'source': 'Realistic Simulation'
-        }
+        """Generar precio realista basado en el precio actual del mercado"""
+        try:
+            # Intentar obtener precio real primero para base realista
+            binance_url = "https://api.binance.com/api/v3/ticker/price"
+            response = requests.get(binance_url, params={'symbol': self.symbol}, timeout=5)
+            
+            if response.status_code == 200:
+                data = response.json()
+                base_price = float(data['price'])
+            else:
+                # Precios base realistas
+                base_prices = {
+                    'BTCUSDT': 105890,  # Precio actual aproximado de MEXC
+                    'ETHUSDT': 3500,
+                    'ADAUSDT': 0.45,
+                    'DOTUSDT': 7.5,
+                    'LINKUSDT': 15.0
+                }
+                base_price = base_prices.get(self.symbol, 105890)
+            
+            # Pequeña variación para simulación
+            variation = np.random.uniform(-0.001, 0.001)  # Solo 0.1% de variación
+            current_price = base_price * (1 + variation)
+            spread = current_price * 0.0001
+            
+            return {
+                'timestamp': datetime.now(),
+                'bid': current_price - spread,
+                'ask': current_price + spread,
+                'symbol': self.symbol,
+                'simulated': True,
+                'source': 'Realistic Simulation'
+            }
+            
+        except Exception as e:
+            # Fallback final con precio fijo
+            base_price = 105890  # Precio actual de MEXC
+            spread = base_price * 0.0001
+            
+            return {
+                'timestamp': datetime.now(),
+                'bid': base_price - spread,
+                'ask': base_price + spread,
+                'symbol': self.symbol,
+                'simulated': True,
+                'source': 'Fixed Price Fallback'
+            }
 
     def get_ticker_price(self) -> dict:
         """Obtener precio actual"""
