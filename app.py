@@ -43,6 +43,8 @@ class MexcFuturesTradingBot:
         
         self.trading_thread = None
         self.position_side = None  # NUEVO: 'long' o 'short'
+        self.last_price_update = 0
+        self.current_price_data = None
         
     def save_state(self):
         """Guardar estado en archivo JSON"""
@@ -239,140 +241,101 @@ class MexcFuturesTradingBot:
         self.save_state()
 
     def get_real_price_from_api(self) -> dict:
-        """Obtener precio REAL de MEXC Futures - CORREGIDO"""
+        """Obtener precio REAL de MEXC Futures - OPTIMIZADO"""
+        current_time = time.time()
+        
+        # Cache de precio por 3 segundos para evitar requests frecuentes
+        if (self.current_price_data and 
+            current_time - self.last_price_update < 3 and
+            self.current_price_data.get('source') != 'Realistic Simulation'):
+            return self.current_price_data
+            
         try:
-            # CORRECCIÓN: Endpoint correcto para el precio actual de futures
-            url = "https://contract.mexc.com/api/v1/contract/market_ticker"
-            params = {'symbol': self.symbol}
+            # OPTIMIZACIÓN: Timeout más corto y headers mejorados
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'application/json'
+            }
             
-            response = requests.get(url, params=params, timeout=10)
+            # Intentar múltiples endpoints en orden
+            endpoints = [
+                {
+                    'url': 'https://contract.mexc.com/api/v1/contract/detail',
+                    'params': {'symbol': self.symbol},
+                    'price_path': ['data', 'lastPrice'],
+                    'name': 'MEXC Futures Detail'
+                },
+                {
+                    'url': 'https://api.mexc.com/api/v3/ticker/price',
+                    'params': {'symbol': self.symbol},
+                    'price_path': ['price'],
+                    'name': 'MEXC Spot'
+                },
+                {
+                    'url': 'https://api.binance.com/api/v3/ticker/price',
+                    'params': {'symbol': self.symbol},
+                    'price_path': ['price'],
+                    'name': 'Binance'
+                }
+            ]
             
-            if response.status_code == 200:
-                data = response.json()
-                # CORRECCIÓN: Estructura correcta de la respuesta
-                if 'data' in data and data['data']:
-                    current_price = float(data['data']['lastPrice'])
-                    # CORRECCIÓN: Usar bid/ask reales en lugar de calcular spread
-                    bid_price = float(data['data']['bid1'])
-                    ask_price = float(data['data']['ask1'])
+            for endpoint in endpoints:
+                try:
+                    response = requests.get(
+                        endpoint['url'], 
+                        params=endpoint['params'], 
+                        headers=headers,
+                        timeout=5  # OPTIMIZACIÓN: Timeout reducido a 5 segundos
+                    )
                     
-                    return {
-                        'timestamp': datetime.now(),
-                        'bid': bid_price,
-                        'ask': ask_price,
-                        'symbol': self.symbol,
-                        'simulated': False,
-                        'source': 'MEXC Futures Real'
-                    }
+                    if response.status_code == 200:
+                        data = response.json()
+                        current_price = data
+                        
+                        # Navegar por el path para obtener el precio
+                        for key in endpoint['price_path']:
+                            current_price = current_price[key]
+                        
+                        current_price = float(current_price)
+                        spread = current_price * 0.0002  # Spread ligeramente mayor
+                        
+                        price_data = {
+                            'timestamp': datetime.now(),
+                            'bid': current_price - spread,
+                            'ask': current_price + spread,
+                            'symbol': self.symbol,
+                            'simulated': False,
+                            'source': endpoint['name']
+                        }
+                        
+                        self.current_price_data = price_data
+                        self.last_price_update = current_time
+                        return price_data
+                        
+                except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                    self.log_message(f"Timeout en {endpoint['name']}, probando siguiente...", "WARNING")
+                    continue
+                except Exception as e:
+                    continue
             
-            # Si falla, intentar con otro endpoint
-            return self.get_alternative_futures_price()
-            
-        except Exception as e:
-            self.log_message(f"Error obteniendo precio futures: {e}", "ERROR")
-            return self.get_alternative_futures_price()
-
-    def get_alternative_futures_price(self) -> dict:
-        """Endpoint alternativo para precio de futures"""
-        try:
-            url = "https://contract.mexc.com/api/v1/contract/detail"
-            params = {'symbol': self.symbol}
-            
-            response = requests.get(url, params=params, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                if 'data' in data and data['data']:
-                    current_price = float(data['data']['lastPrice'])
-                    spread = current_price * 0.0001
-                    
-                    return {
-                        'timestamp': datetime.now(),
-                        'bid': current_price - spread,
-                        'ask': current_price + spread,
-                        'symbol': self.symbol,
-                        'simulated': False,
-                        'source': 'MEXC Futures Alternative'
-                    }
-            
-            return self.get_spot_price_fallback()
-            
-        except Exception as e:
-            self.log_message(f"Error obteniendo precio alternativo: {e}", "ERROR")
-            return self.get_spot_price_fallback()
-
-    def get_spot_price_fallback(self) -> dict:
-        """Obtener precio de spot MEXC como fallback"""
-        try:
-            url = "https://api.mexc.com/api/v3/ticker/price"
-            params = {'symbol': self.symbol.replace('USDT', '_USDT')}  # Formato para spot
-            
-            response = requests.get(url, params=params, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                if 'price' in data:
-                    current_price = float(data['price'])
-                    spread = current_price * 0.0001
-                    
-                    return {
-                        'timestamp': datetime.now(),
-                        'bid': current_price - spread,
-                        'ask': current_price + spread,
-                        'symbol': self.symbol,
-                        'simulated': False,
-                        'source': 'MEXC Spot Fallback'
-                    }
-            
-            return self.get_binance_price()
-            
-        except Exception as e:
-            self.log_message(f"Error obteniendo precio spot: {e}", "ERROR")
-            return self.get_binance_price()
-
-    def get_binance_price(self) -> dict:
-        """Obtener precio de Binance como backup"""
-        try:
-            url = "https://api.binance.com/api/v3/ticker/price"
-            params = {'symbol': self.symbol}
-            
-            response = requests.get(url, params=params, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                if 'price' in data:
-                    current_price = float(data['price'])
-                    spread = current_price * 0.0001
-                    
-                    return {
-                        'timestamp': datetime.now(),
-                        'bid': current_price - spread,
-                        'ask': current_price + spread,
-                        'symbol': self.symbol,
-                        'simulated': False,
-                        'source': 'Binance Backup'
-                    }
-            
+            # Si todos los endpoints fallan, usar simulación realista
             return self.get_realistic_price()
             
         except Exception as e:
-            self.log_message(f"Error obteniendo precio de Binance: {e}", "ERROR")
+            self.log_message(f"Error crítico obteniendo precio: {str(e)[:100]}", "ERROR")
             return self.get_realistic_price()
 
     def get_realistic_price(self) -> dict:
-        """Generar precio realista basado en el precio actual del mercado"""
+        """Generar precio realista basado en el último precio conocido"""
         try:
-            # Intentar obtener precio real primero para base realista
-            binance_url = "https://api.binance.com/api/v3/ticker/price"
-            response = requests.get(binance_url, params={'symbol': self.symbol}, timeout=5)
-            
-            if response.status_code == 200:
-                data = response.json()
-                base_price = float(data['price'])
+            # Usar el último precio conocido como base
+            if self.tick_data:
+                last_tick = list(self.tick_data)[-1]
+                base_price = last_tick['bid']
             else:
-                # Precios base realistas
+                # Precio base realista si no hay datos
                 base_prices = {
-                    'BTCUSDT': 105890,  # Precio actual aproximado de MEXC
+                    'BTCUSDT': 105890,
                     'ETHUSDT': 3500,
                     'ADAUSDT': 0.45,
                     'DOTUSDT': 7.5,
@@ -380,12 +343,12 @@ class MexcFuturesTradingBot:
                 }
                 base_price = base_prices.get(self.symbol, 105890)
             
-            # Pequeña variación para simulación
-            variation = np.random.uniform(-0.001, 0.001)  # Solo 0.1% de variación
+            # Pequeña variación realista
+            variation = np.random.uniform(-0.0005, 0.0005)  # Solo 0.05% de variación
             current_price = base_price * (1 + variation)
-            spread = current_price * 0.0001
+            spread = current_price * 0.0002
             
-            return {
+            price_data = {
                 'timestamp': datetime.now(),
                 'bid': current_price - spread,
                 'ask': current_price + spread,
@@ -394,12 +357,16 @@ class MexcFuturesTradingBot:
                 'source': 'Realistic Simulation'
             }
             
+            self.current_price_data = price_data
+            self.last_price_update = time.time()
+            return price_data
+            
         except Exception as e:
             # Fallback final con precio fijo
-            base_price = 105890  # Precio actual de MEXC
-            spread = base_price * 0.0001
+            base_price = 105890
+            spread = base_price * 0.0002
             
-            return {
+            price_data = {
                 'timestamp': datetime.now(),
                 'bid': base_price - spread,
                 'ask': base_price + spread,
@@ -407,14 +374,25 @@ class MexcFuturesTradingBot:
                 'simulated': True,
                 'source': 'Fixed Price Fallback'
             }
+            
+            self.current_price_data = price_data
+            self.last_price_update = time.time()
+            return price_data
 
     def get_ticker_price(self) -> dict:
-        """Obtener precio actual"""
+        """Obtener precio actual - OPTIMIZADO"""
         try:
-            real_data = self.get_real_price_from_api()
-            return real_data
+            price_data = self.get_real_price_from_api()
+            
+            # Solo loggear errores ocasionales, no cada timeout
+            if price_data['source'] == 'Realistic Simulation' and len(self.tick_data) > 0:
+                if np.random.random() < 0.1:  # Solo loggear 10% de los errores
+                    self.log_message("Usando precio simulado - posibles issues de conexión", "WARNING")
+            
+            return price_data
+            
         except Exception as e:
-            self.log_message(f"Error crítico obteniendo precio: {e}", "ERROR")
+            self.log_message(f"Error crítico en get_ticker_price: {e}", "ERROR")
             return self.get_realistic_price()
 
     def calculate_indicators(self) -> dict:
@@ -651,18 +629,29 @@ class MexcFuturesTradingBot:
         self.tick_data.clear()
         self.total_profit = 0
         self.position_side = None
+        self.current_price_data = None
+        self.last_price_update = 0
         self.log_message("🔄 Cuenta futures reiniciada a $250.00", "INFO")
         self.save_state()
 
     def trading_cycle(self):
-        """Ciclo principal de trading FUTURES"""
+        """Ciclo principal de trading FUTURES - OPTIMIZADO"""
         self.log_message(f"🚀 Iniciando ciclo de trading FUTURES {self.leverage}x - RIESGO {self.risk_per_trade*100}%")
+        
+        consecutive_errors = 0
+        max_consecutive_errors = 5
         
         while self.is_running:
             try:
                 tick_data = self.get_ticker_price()
                 if tick_data:
                     self.tick_data.append(tick_data)
+                    consecutive_errors = 0  # Reset error counter on success
+                else:
+                    consecutive_errors += 1
+                
+                # Si hay muchos errores consecutivos, esperar más tiempo
+                sleep_time = 5 if consecutive_errors > 3 else 2
                 
                 indicators = self.calculate_indicators()
                 
@@ -677,11 +666,18 @@ class MexcFuturesTradingBot:
                             price = tick_data['bid'] if self.position_side == 'long' else tick_data['ask']
                         self.execute_trade(signal, price)
                 
-                time.sleep(2)
+                time.sleep(sleep_time)
                 
             except Exception as e:
-                self.log_message(f"❌ Error en ciclo de trading futures: {e}", "ERROR")
-                time.sleep(5)
+                consecutive_errors += 1
+                if consecutive_errors <= max_consecutive_errors:
+                    self.log_message(f"❌ Error en ciclo de trading ({consecutive_errors}/{max_consecutive_errors}): {str(e)[:100]}", "ERROR")
+                else:
+                    self.log_message("🛑 Demasiados errores consecutivos, revisar conexión", "CRITICAL")
+                
+                # Esperar más tiempo después de errores
+                sleep_time = min(10 + consecutive_errors * 2, 30)  # Máximo 30 segundos
+                time.sleep(sleep_time)
 
     def start_trading(self):
         """Iniciar bot de trading futures"""
