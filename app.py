@@ -241,15 +241,16 @@ class MexcFuturesTradingBot:
     def get_real_price_from_api(self) -> dict:
         """Obtener precio REAL de MEXC Futures"""
         try:
-            # NUEVO: Usar endpoint de futures
-            url = f"https://contract.mexc.com/api/v1/contract/ticker"
+            # CORRECCIÓN: Endpoint correcto para futures de MEXC
+            url = "https://contract.mexc.com/api/v1/contract/detail"
             params = {'symbol': self.symbol}
             
             response = requests.get(url, params=params, timeout=10)
             
             if response.status_code == 200:
                 data = response.json()
-                if 'data' in data and 'lastPrice' in data['data']:
+                # CORRECCIÓN: Estructura correcta de la respuesta MEXC Futures
+                if 'data' in data and data['data']:
                     current_price = float(data['data']['lastPrice'])
                     spread = current_price * 0.0001
                     
@@ -259,13 +260,43 @@ class MexcFuturesTradingBot:
                         'ask': current_price + spread,
                         'symbol': self.symbol,
                         'simulated': False,
-                        'source': 'MEXC Futures'
+                        'source': 'MEXC Futures Real'
+                    }
+            
+            # Fallback a precio de spot si futures falla
+            return self.get_spot_price_fallback()
+            
+        except Exception as e:
+            self.log_message(f"Error obteniendo precio futures real: {e}", "ERROR")
+            return self.get_spot_price_fallback()
+
+    def get_spot_price_fallback(self) -> dict:
+        """Obtener precio de spot MEXC como fallback"""
+        try:
+            url = "https://api.mexc.com/api/v3/ticker/price"
+            params = {'symbol': self.symbol.replace('USDT', '_USDT')}  # Formato para spot
+            
+            response = requests.get(url, params=params, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if 'price' in data:
+                    current_price = float(data['price'])
+                    spread = current_price * 0.0001
+                    
+                    return {
+                        'timestamp': datetime.now(),
+                        'bid': current_price - spread,
+                        'ask': current_price + spread,
+                        'symbol': self.symbol,
+                        'simulated': False,
+                        'source': 'MEXC Spot Fallback'
                     }
             
             return self.get_binance_price()
             
         except Exception as e:
-            self.log_message(f"Error obteniendo precio futures: {e}", "ERROR")
+            self.log_message(f"Error obteniendo precio spot: {e}", "ERROR")
             return self.get_binance_price()
 
     def get_binance_price(self) -> dict:
@@ -300,7 +331,7 @@ class MexcFuturesTradingBot:
     def get_realistic_price(self) -> dict:
         """Generar precio realista"""
         base_prices = {
-            'BTCUSDT': 100000,
+            'BTCUSDT': 105000,
             'ETHUSDT': 3500,
             'ADAUSDT': 0.45,
             'DOTUSDT': 7.5,
