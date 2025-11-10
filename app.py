@@ -14,8 +14,8 @@ import os
 
 # Configurar la página de Streamlit
 st.set_page_config(
-    page_title="?? Bot HFT MEXC",
-    page_icon="??",
+    page_title="🤖 Bot HFT MEXC",
+    page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -380,10 +380,14 @@ class MexcHighFrequencyTradingBot:
         bb_upper = indicators['bb_upper']
         bb_lower = indicators['bb_lower']
         
+        # 🚨 MEJORA 1: Validar que RSI no sea NaN
+        if np.isnan(rsi):
+            return 'hold'
+        
         # ESTRATEGIA MÁS AGRESIVA Y SELECTIVA
         buy_conditions = [
             momentum > self.momentum_threshold,      # Momentum fuerte
-            rsi < 45,                               # No sobrecomprado
+            rsi < 60,                               # 🚨 MEJORA 2: De 45 a 60 (más flexible, evita RSI alto)
             macd > macd_signal,                     # Tendencia alcista
             current_price < bb_lower,               # Precio en zona de soporte
             volatility < 0.02                       # Mercado estable
@@ -404,20 +408,20 @@ class MexcHighFrequencyTradingBot:
             
             # Tomar ganancias rápido
             if current_profit_pct >= self.min_profit_target:
-                self.log_message(f"?? TOMANDO GANANCIAS: {current_profit_pct:.3%} (+)", "PROFIT")
+                self.log_message(f"🎯 TOMANDO GANANCIAS: {current_profit_pct:.3%} (+)", "PROFIT")
                 return 'sell'
             
             # Stop loss protector
             if current_loss_pct >= self.max_loss_stop:
-                self.log_message(f"?? STOP LOSS: {current_loss_pct:.3%} (-)", "LOSS")
+                self.log_message(f"🛑 STOP LOSS: {current_loss_pct:.3%} (-)", "LOSS")
                 return 'sell'
         
         # SEÑALES PRINCIPALES
         if sum(buy_conditions) >= 4:  # Necesita 4 de 5 condiciones
-            self.log_message(f"?? SEÑAL COMPRA FUERTE: momentum={momentum:.4f}, RSI={rsi:.1f}", "SIGNAL")
+            self.log_message(f"✅ SEÑAL COMPRA FUERTE: momentum={momentum:.4f}, RSI={rsi:.1f}", "SIGNAL")
             return 'buy'
         elif sum(sell_conditions) >= 3:  # Necesita 3 de 5 condiciones
-            self.log_message(f"?? SEÑAL VENTA: momentum={momentum:.4f}, RSI={rsi:.1f}", "SIGNAL")
+            self.log_message(f"🎯 SEÑAL VENTA: momentum={momentum:.4f}, RSI={rsi:.1f}", "SIGNAL")
             return 'sell'
         
         return 'hold'
@@ -438,7 +442,7 @@ class MexcHighFrequencyTradingBot:
                     quantity = investment_amount / price
                     
                     if investment_amount > self.cash_balance:
-                        self.log_message("? Fondos insuficientes", "ERROR")
+                        self.log_message("❌ Fondos insuficientes", "ERROR")
                         return
                     
                     # Actualizar balances
@@ -447,7 +451,7 @@ class MexcHighFrequencyTradingBot:
                     self.entry_price = price
                     self.open_positions += 1
                     
-                    trade_info = f"?? COMPRA: {quantity:.6f} {self.symbol} @ ${price:.2f} | Inversión: ${investment_amount:.2f} | Cash: ${self.cash_balance:.2f}"
+                    trade_info = f"✅ COMPRA: {quantity:.6f} {self.symbol} @ ${price:.2f} | Inversión: ${investment_amount:.2f} | Cash: ${self.cash_balance:.2f}"
                     self.log_message(trade_info, "TRADE")
                     
             elif action == 'sell' and self.position > 0:
@@ -462,7 +466,7 @@ class MexcHighFrequencyTradingBot:
                 self.open_positions = 0
                 self.total_profit += profit_loss
                 
-                profit_color = "??" if profit_loss > 0 else "??"
+                profit_color = "💰" if profit_loss > 0 else "📉"
                 trade_info = f"{profit_color} VENTA: {quantity_to_sell:.6f} {self.symbol} @ ${price:.2f} | Monto: ${sale_amount:.2f} | P/L: ${profit_loss:.4f} | Profit Total: ${self.total_profit:.2f}"
                 self.log_message(trade_info, "TRADE")
             
@@ -484,7 +488,7 @@ class MexcHighFrequencyTradingBot:
             self.save_state()
             
         except Exception as e:
-            self.log_message(f"Error ejecutando trade: {e}", "ERROR")
+            self.log_message(f"❌ Error ejecutando trade: {e}", "ERROR")
 
     def close_all_positions(self):
         """Cerrar todas las posiciones abiertas"""
@@ -495,7 +499,7 @@ class MexcHighFrequencyTradingBot:
                 tick_data = self.get_ticker_price()
             price = tick_data['ask']
             self.execute_trade('sell', price)
-            self.log_message("?? TODAS las posiciones cerradas", "INFO")
+            self.log_message("🛑 TODAS las posiciones cerradas", "INFO")
 
     def reset_account(self):
         """Reiniciar cuenta a estado inicial"""
@@ -507,12 +511,12 @@ class MexcHighFrequencyTradingBot:
         self.log_messages.clear()
         self.tick_data.clear()
         self.total_profit = 0
-        self.log_message("?? Cuenta reiniciada a $250.00", "INFO")
+        self.log_message("🔄 Cuenta reiniciada a $250.00", "INFO")
         self.save_state()
 
     def trading_cycle(self):
         """Ciclo principal de trading"""
-        self.log_message("?? Iniciando ciclo de trading HFT - ESTRATEGIA OPTIMIZADA")
+        self.log_message("🚀 Iniciando ciclo de trading HFT - ESTRATEGIA OPTIMIZADA")
         
         while self.is_running:
             try:
@@ -531,7 +535,7 @@ class MexcHighFrequencyTradingBot:
                 time.sleep(2)
                 
             except Exception as e:
-                self.log_message(f"Error en ciclo de trading: {e}", "ERROR")
+                self.log_message(f"❌ Error en ciclo de trading: {e}", "ERROR")
                 time.sleep(5)
 
     def start_trading(self):
@@ -540,12 +544,12 @@ class MexcHighFrequencyTradingBot:
             self.is_running = True
             self.trading_thread = threading.Thread(target=self.trading_cycle, daemon=True)
             self.trading_thread.start()
-            self.log_message("? Bot de trading iniciado - ESTRATEGIA AGRESIVA ACTIVADA")
+            self.log_message("🤖 Bot de trading iniciado - ESTRATEGIA AGRESIVA ACTIVADA")
 
     def stop_trading(self):
         """Detener bot de trading"""
         self.is_running = False
-        self.log_message("?? Bot de trading detenido")
+        self.log_message("🛑 Bot de trading detenido")
 
     def get_performance_stats(self):
         """Obtener estadísticas de performance"""
@@ -584,7 +588,7 @@ class MexcHighFrequencyTradingBot:
         return stats
 
 def main():
-    st.title("?? Bot HFT MEXC - VERSIÓN OPTIMIZADA ??")
+    st.title("🤖 Bot HFT MEXC - VERSIÓN OPTIMIZADA 🚀")
     st.markdown("---")
     
     # Inicializar el bot
@@ -595,7 +599,7 @@ def main():
     
     # Sidebar
     with st.sidebar:
-        st.header("?? Configuración")
+        st.header("⚙️ Configuración")
         
         api_key = st.text_input("API Key MEXC", type="password")
         secret_key = st.text_input("Secret Key MEXC", type="password")
@@ -606,37 +610,37 @@ def main():
         bot.symbol = symbol
         
         st.markdown("---")
-        st.header("?? Control del Bot")
+        st.header("🎮 Control del Bot")
         
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("?? Iniciar Bot", use_container_width=True):
+            if st.button("▶️ Iniciar Bot", use_container_width=True):
                 bot.start_trading()
                 st.rerun()
         
         with col2:
-            if st.button("?? Detener Bot", use_container_width=True):
+            if st.button("⏹️ Detener Bot", use_container_width=True):
                 bot.stop_trading()
                 st.rerun()
         
-        if st.button("?? Cerrar Todas las Posiciones", use_container_width=True):
+        if st.button("🛑 Cerrar Todas las Posiciones", use_container_width=True):
             bot.close_all_positions()
             st.rerun()
             
-        if st.button("?? Reiniciar Cuenta", use_container_width=True):
+        if st.button("🔄 Reiniciar Cuenta", use_container_width=True):
             bot.reset_account()
             st.rerun()
         
         st.markdown("---")
-        st.header("?? Estadísticas Clave")
+        st.header("📊 Estadísticas Clave")
         st.info(f"**Tamaño posición:** {bot.position_size*100}%")
         st.info(f"**Target ganancia:** {bot.min_profit_target*100}%")
         st.info(f"**Stop loss:** {bot.max_loss_stop*100}%")
         
         if bot.is_running:
-            st.success("? Bot Ejecutándose - ESTRATEGIA AGRESIVA")
+            st.success("✅ Bot Ejecutándose - ESTRATEGIA AGRESIVA")
         else:
-            st.warning("?? Bot Detenido")
+            st.warning("🛑 Bot Detenido")
             
         if bot.tick_data:
             latest_tick = list(bot.tick_data)[-1]
@@ -650,26 +654,26 @@ def main():
     
     with col1:
         st.metric(
-            label="?? Cash Disponible",
+            label="💰 Cash Disponible",
             value=f"${stats['cash_balance']:.2f}",
             delta=f"${stats['realized_profit']:.2f}" if stats['realized_profit'] != 0 else None
         )
     
     with col2:
         st.metric(
-            label="?? Precio Actual",
+            label="📈 Precio Actual",
             value=f"${stats['current_price']:.2f}"
         )
     
     with col3:
         st.metric(
-            label="?? Tasa de Acierto",
+            label="🎯 Tasa de Acierto",
             value=f"{stats['win_rate']:.1f}%"
         )
     
     with col4:
         st.metric(
-            label="?? Total Operaciones",
+            label="📊 Total Operaciones",
             value=f"{stats['total_trades']}"
         )
     
@@ -678,33 +682,33 @@ def main():
     
     with col5:
         st.metric(
-            label="?? Posiciones Abiertas",
+            label="🔢 Posiciones Abiertas",
             value=f"{stats['open_positions']}"
         )
     
     with col6:
         st.metric(
-            label="?? Tamaño Posición",
+            label="📦 Tamaño Posición",
             value=f"{stats['position_size']:.6f}"
         )
     
     with col7:
         st.metric(
-            label="?? Equity Total",
+            label="💹 Equity Total",
             value=f"${stats['total_equity']:.2f}"
         )
     
     with col8:
-        status = "?? LIVE" if bot.is_running else "?? STOP"
+        status = "🎪 LIVE" if bot.is_running else "🛑 STOP"
         st.metric(
-            label="?? Estado",
+            label="🎪 Estado",
             value=status
         )
     
     st.markdown("---")
     
     # Gráficos y datos
-    tab1, tab2, tab3 = st.tabs(["?? Gráfico de Precios", "?? Historial de Operaciones", "?? Logs del Sistema"])
+    tab1, tab2, tab3 = st.tabs(["📈 Gráfico de Precios", "📋 Historial de Operaciones", "📝 Logs del Sistema"])
     
     with tab1:
         if bot.tick_data:
@@ -785,7 +789,7 @@ def main():
                     if "COMPRA" in log_entry:
                         st.success(log_entry)
                     elif "VENTA" in log_entry:
-                        if "??" in log_entry:
+                        if "📉" in log_entry:
                             st.error(log_entry)
                         else:
                             st.success(log_entry)
