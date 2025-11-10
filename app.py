@@ -14,8 +14,8 @@ import os
 
 # Configurar la página de Streamlit
 st.set_page_config(
-    page_title="🤖 Bot Futures MEXC 3x",
-    page_icon="🚀",
+    page_title="🤖 Bot HFT Futuros MEXC - ESTRATEGIA INVERSA",
+    page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -30,21 +30,19 @@ class MexcFuturesTradingBot:
         # Cargar estado desde archivo o inicializar
         self.load_state()
         
-        # CONFIGURACIÓN FUTUROS 3x - MÍNIMOS CAMBIOS
-        self.leverage = 3                       # NUEVO: Apalancamiento 3x
-        self.risk_per_trade = 0.02              # NUEVO: 2% riesgo por operación
-        self.position_size = 0.06               # MODIFICADO: 6% (2% * 3x)
-        self.max_positions = 1                  # MANTENIDO: 1 posición máxima
-        self.momentum_threshold = 0.001         # MANTENIDO: 0.1% para señales sensibles
-        self.mean_reversion_threshold = 0.0015  # MANTENIDO: Más sensible
-        self.volatility_multiplier = 1.8        # MANTENIDO: Más tolerante
-        self.min_profit_target = 0.003          # MANTENIDO: 0.3% ganancia (0.9% con 3x)
-        self.max_loss_stop = 0.002              # MANTENIDO: 0.2% stop (0.6% con 3x)
+        # CONFIGURACIÓN HFT FUTUROS - ESTRATEGIA INVERSA
+        self.leverage = 3  # Apalancamiento conservador
+        self.position_size = 0.08  # 8% del capital por operación (REDUCIDO)
+        self.max_positions = 1     # 1 operación a la vez (MAXIMA SEGURIDAD)
+        self.momentum_threshold = 0.0012  # Umbral más sensible
+        self.mean_reversion_threshold = 0.001
+        self.volatility_multiplier = 1.8
+        
+        # TARGETS MÁS CONSERVADORES - ESTRATEGIA INVERSA
+        self.min_profit_target = 0.0025  # 0.25% target (INVERTIDO)
+        self.max_loss_stop = 0.0015     # 0.15% stop loss (ESTRICTO)
         
         self.trading_thread = None
-        self.position_side = None  # NUEVO: 'long' o 'short'
-        self.last_price_update = 0
-        self.current_price_data = None
         
     def save_state(self):
         """Guardar estado en archivo JSON"""
@@ -52,14 +50,14 @@ class MexcFuturesTradingBot:
             state = {
                 'cash_balance': self.cash_balance,
                 'position': self.position,
+                'position_side': self.position_side,  # 'long' o 'short'
                 'entry_price': self.entry_price,
                 'positions_history': [],
                 'open_positions': self.open_positions,
                 'log_messages': self.log_messages,
                 'tick_data': [],
                 'is_running': self.is_running,
-                'total_profit': self.total_profit,
-                'position_side': self.position_side  # NUEVO: Guardar lado de posición
+                'total_profit': self.total_profit
             }
             
             # Convertir positions_history
@@ -74,7 +72,7 @@ class MexcFuturesTradingBot:
                 tick_copy['timestamp'] = tick['timestamp'].isoformat() if isinstance(tick['timestamp'], datetime) else str(tick['timestamp'])
                 state['tick_data'].append(tick_copy)
                     
-            with open('bot_state.json', 'w') as f:
+            with open('futures_bot_state.json', 'w') as f:
                 json.dump(state, f, default=str, indent=2)
         except Exception as e:
             print(f"Error guardando estado: {e}")
@@ -82,12 +80,12 @@ class MexcFuturesTradingBot:
     def load_state(self):
         """Cargar estado desde archivo JSON"""
         try:
-            if os.path.exists('bot_state.json'):
-                with open('bot_state.json', 'r') as f:
+            if os.path.exists('futures_bot_state.json'):
+                with open('futures_bot_state.json', 'r') as f:
                     state = json.load(f)
                 
                 # Convertir deque de tick_data
-                tick_data = deque(maxlen=50)
+                tick_data = deque(maxlen=100)  # Más datos para mejor análisis
                 for tick in state.get('tick_data', []):
                     tick_copy = tick.copy()
                     if 'timestamp' in tick:
@@ -115,45 +113,45 @@ class MexcFuturesTradingBot:
                     positions_history.append(pos_copy)
                 
                 self.bot_data = {
-                    'cash_balance': state.get('cash_balance', 250.0),
+                    'cash_balance': state.get('cash_balance', 255.0),  # CAPITAL INICIAL $255
                     'position': state.get('position', 0),
+                    'position_side': state.get('position_side', ''),  # 'long' o 'short'
                     'entry_price': state.get('entry_price', 0),
                     'positions_history': positions_history,
                     'open_positions': state.get('open_positions', 0),
                     'log_messages': state.get('log_messages', []),
                     'tick_data': tick_data,
                     'is_running': state.get('is_running', False),
-                    'total_profit': state.get('total_profit', 0),
-                    'position_side': state.get('position_side', None)  # NUEVO: Cargar lado de posición
+                    'total_profit': state.get('total_profit', 0)
                 }
             else:
-                # Estado inicial
+                # Estado inicial FUTUROS
                 self.bot_data = {
-                    'cash_balance': 250.0,
+                    'cash_balance': 255.0,  # CAPITAL INICIAL $255
                     'position': 0,
+                    'position_side': '',  # 'long' o 'short'
                     'entry_price': 0,
                     'positions_history': [],
                     'open_positions': 0,
                     'log_messages': [],
-                    'tick_data': deque(maxlen=50),
+                    'tick_data': deque(maxlen=100),  # Más datos
                     'is_running': False,
-                    'total_profit': 0,
-                    'position_side': None  # NUEVO: Inicializar lado de posición
+                    'total_profit': 0
                 }
         except Exception as e:
             print(f"Error cargando estado: {e}")
-            # Estado inicial por defecto
+            # Estado inicial por defecto FUTUROS
             self.bot_data = {
-                'cash_balance': 250.0,
+                'cash_balance': 255.0,  # CAPITAL INICIAL $255
                 'position': 0,
+                'position_side': '',  # 'long' o 'short'
                 'entry_price': 0,
                 'positions_history': [],
                 'open_positions': 0,
                 'log_messages': [],
-                'tick_data': deque(maxlen=50),
+                'tick_data': deque(maxlen=100),
                 'is_running': False,
-                'total_profit': 0,
-                'position_side': None  # NUEVO: Inicializar lado de posición
+                'total_profit': 0
             }
     
     @property
@@ -172,6 +170,15 @@ class MexcFuturesTradingBot:
     @position.setter
     def position(self, value):
         self.bot_data['position'] = value
+        self.save_state()
+        
+    @property
+    def position_side(self):
+        return self.bot_data['position_side']
+    
+    @position_side.setter
+    def position_side(self, value):
+        self.bot_data['position_side'] = value
         self.save_state()
         
     @property
@@ -221,214 +228,103 @@ class MexcFuturesTradingBot:
     def total_profit(self, value):
         self.bot_data['total_profit'] = value
         self.save_state()
-    
-    @property
-    def position_side(self):
-        return self.bot_data['position_side']
-    
-    @position_side.setter
-    def position_side(self, value):
-        self.bot_data['position_side'] = value
-        self.save_state()
 
     def log_message(self, message: str, level: str = "INFO"):
         """Agregar mensaje al log"""
         timestamp = datetime.now().strftime("%H:%M:%S")
         log_entry = f"[{timestamp}] {level}: {message}"
         self.log_messages.append(log_entry)
-        if len(self.log_messages) > 50:
+        if len(self.log_messages) > 100:  # Más logs
             self.log_messages.pop(0)
         self.save_state()
 
-    def get_real_price_from_api(self) -> dict:
-        """Obtener precio REAL de MEXC Futures - OPTIMIZADO"""
-        current_time = time.time()
-        
-        # Cache de precio por 3 segundos para evitar requests frecuentes
-        if (self.current_price_data and 
-            current_time - self.last_price_update < 3 and
-            self.current_price_data.get('source') != 'Realistic Simulation'):
-            return self.current_price_data
-            
+    def get_futures_price(self) -> dict:
+        """Obtener precio de FUTUROS MEXC"""
         try:
-            # OPTIMIZACIÓN: Timeout más corto y headers mejorados
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': 'application/json'
-            }
+            url = f"https://api.mexc.com/api/v3/ticker/price"
+            params = {'symbol': self.symbol}
             
-            # Intentar múltiples endpoints en orden
-            endpoints = [
-                {
-                    'url': 'https://contract.mexc.com/api/v1/contract/detail',
-                    'params': {'symbol': self.symbol},
-                    'price_path': ['data', 'lastPrice'],
-                    'name': 'MEXC Futures Detail'
-                },
-                {
-                    'url': 'https://api.mexc.com/api/v3/ticker/price',
-                    'params': {'symbol': self.symbol},
-                    'price_path': ['price'],
-                    'name': 'MEXC Spot'
-                },
-                {
-                    'url': 'https://api.binance.com/api/v3/ticker/price',
-                    'params': {'symbol': self.symbol},
-                    'price_path': ['price'],
-                    'name': 'Binance'
-                }
-            ]
+            response = requests.get(url, params=params, timeout=5)  # Timeout más corto
             
-            for endpoint in endpoints:
-                try:
-                    response = requests.get(
-                        endpoint['url'], 
-                        params=endpoint['params'], 
-                        headers=headers,
-                        timeout=5  # OPTIMIZACIÓN: Timeout reducido a 5 segundos
-                    )
+            if response.status_code == 200:
+                data = response.json()
+                if 'price' in data:
+                    current_price = float(data['price'])
+                    spread = current_price * 0.00005  # Spread más ajustado para futuros
                     
-                    if response.status_code == 200:
-                        data = response.json()
-                        current_price = data
-                        
-                        # Navegar por el path para obtener el precio
-                        for key in endpoint['price_path']:
-                            current_price = current_price[key]
-                        
-                        current_price = float(current_price)
-                        spread = current_price * 0.0002  # Spread ligeramente mayor
-                        
-                        price_data = {
-                            'timestamp': datetime.now(),
-                            'bid': current_price - spread,
-                            'ask': current_price + spread,
-                            'symbol': self.symbol,
-                            'simulated': False,
-                            'source': endpoint['name']
-                        }
-                        
-                        self.current_price_data = price_data
-                        self.last_price_update = current_time
-                        return price_data
-                        
-                except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
-                    self.log_message(f"Timeout en {endpoint['name']}, probando siguiente...", "WARNING")
-                    continue
-                except Exception as e:
-                    continue
+                    return {
+                        'timestamp': datetime.now(),
+                        'bid': current_price - spread,
+                        'ask': current_price + spread,
+                        'symbol': self.symbol,
+                        'simulated': False,
+                        'source': 'MEXC Futures'
+                    }
             
-            # Si todos los endpoints fallan, usar simulación realista
-            return self.get_realistic_price()
+            return self.get_backup_price()
             
         except Exception as e:
-            self.log_message(f"Error crítico obteniendo precio: {str(e)[:100]}", "ERROR")
-            return self.get_realistic_price()
+            self.log_message(f"Error obteniendo precio futuros: {e}", "ERROR")
+            return self.get_backup_price()
 
-    def get_realistic_price(self) -> dict:
-        """Generar precio realista basado en el último precio conocido"""
-        try:
-            # Usar el último precio conocido como base
-            if self.tick_data:
-                last_tick = list(self.tick_data)[-1]
-                base_price = last_tick['bid']
-            else:
-                # Precio base realista si no hay datos
-                base_prices = {
-                    'BTCUSDT': 105890,
-                    'ETHUSDT': 3500,
-                    'ADAUSDT': 0.45,
-                    'DOTUSDT': 7.5,
-                    'LINKUSDT': 15.0
-                }
-                base_price = base_prices.get(self.symbol, 105890)
-            
-            # Pequeña variación realista
-            variation = np.random.uniform(-0.0005, 0.0005)  # Solo 0.05% de variación
-            current_price = base_price * (1 + variation)
-            spread = current_price * 0.0002
-            
-            price_data = {
-                'timestamp': datetime.now(),
-                'bid': current_price - spread,
-                'ask': current_price + spread,
-                'symbol': self.symbol,
-                'simulated': True,
-                'source': 'Realistic Simulation'
-            }
-            
-            self.current_price_data = price_data
-            self.last_price_update = time.time()
-            return price_data
-            
-        except Exception as e:
-            # Fallback final con precio fijo
-            base_price = 105890
-            spread = base_price * 0.0002
-            
-            price_data = {
-                'timestamp': datetime.now(),
-                'bid': base_price - spread,
-                'ask': base_price + spread,
-                'symbol': self.symbol,
-                'simulated': True,
-                'source': 'Fixed Price Fallback'
-            }
-            
-            self.current_price_data = price_data
-            self.last_price_update = time.time()
-            return price_data
-
-    def get_ticker_price(self) -> dict:
-        """Obtener precio actual - OPTIMIZADO"""
-        try:
-            price_data = self.get_real_price_from_api()
-            
-            # Solo loggear errores ocasionales, no cada timeout
-            if price_data['source'] == 'Realistic Simulation' and len(self.tick_data) > 0:
-                if np.random.random() < 0.1:  # Solo loggear 10% de los errores
-                    self.log_message("Usando precio simulado - posibles issues de conexión", "WARNING")
-            
-            return price_data
-            
-        except Exception as e:
-            self.log_message(f"Error crítico en get_ticker_price: {e}", "ERROR")
-            return self.get_realistic_price()
+    def get_backup_price(self) -> dict:
+        """Precio de backup para futuros"""
+        base_prices = {
+            'BTCUSDT': 106000,  # Precio actualizado
+            'ETHUSDT': 3500,
+            'ADAUSDT': 0.45,
+            'DOTUSDT': 7.5,
+            'LINKUSDT': 15.0
+        }
+        
+        base_price = base_prices.get(self.symbol, 106000)
+        variation = np.random.uniform(-0.01, 0.01)  # Menor variación
+        current_price = base_price * (1 + variation)
+        spread = current_price * 0.00005  # Spread ajustado
+        
+        return {
+            'timestamp': datetime.now(),
+            'bid': current_price - spread,
+            'ask': current_price + spread,
+            'symbol': self.symbol,
+            'simulated': True,
+            'source': 'Futures Simulation'
+        }
 
     def calculate_indicators(self) -> dict:
-        """Calcular indicadores técnicos OPTIMIZADOS"""
-        if len(self.tick_data) < 10:
+        """Calcular indicadores técnicos OPTIMIZADOS PARA HFT"""
+        if len(self.tick_data) < 15:
             return {}
         
         prices = [tick['bid'] for tick in self.tick_data]
         df = pd.DataFrame(prices, columns=['price'])
         
-        # Indicadores más agresivos
+        # Indicadores ULTRA RÁPIDOS para HFT
         df['returns'] = df['price'].pct_change()
-        df['momentum'] = df['returns'].rolling(3).mean()  # Ventana más corta
-        df['sma_5'] = df['price'].rolling(5).mean()
-        df['sma_10'] = df['price'].rolling(10).mean()
-        df['price_deviation'] = (df['price'] - df['sma_5']) / df['sma_5']
-        df['volatility'] = df['returns'].rolling(8).std() * self.volatility_multiplier
+        df['momentum'] = df['returns'].rolling(2).mean()  # Ventana MUY corta
+        df['sma_3'] = df['price'].rolling(3).mean()  # SMA más corta
+        df['sma_8'] = df['price'].rolling(8).mean()
+        df['price_deviation'] = (df['price'] - df['sma_3']) / df['sma_3']
+        df['volatility'] = df['returns'].rolling(5).std() * self.volatility_multiplier
         
-        # RSI más rápido
+        # RSI ultra rápido
         delta = df['price'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=5).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=5).mean()
+        gain = (delta.where(delta > 0, 0)).rolling(window=3).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=3).mean()
         rs = gain / loss
         df['rsi'] = 100 - (100 / (1 + rs))
         
-        # MACD más agresivo
-        exp12 = df['price'].ewm(span=5, adjust=False).mean()
-        exp26 = df['price'].ewm(span=8, adjust=False).mean()
-        df['macd'] = exp12 - exp26
-        df['macd_signal'] = df['macd'].ewm(span=3, adjust=False).mean()
+        # MACD ultra rápido
+        exp8 = df['price'].ewm(span=3, adjust=False).mean()
+        exp16 = df['price'].ewm(span=6, adjust=False).mean()
+        df['macd'] = exp8 - exp16
+        df['macd_signal'] = df['macd'].ewm(span=2, adjust=False).mean()
         
-        # Bollinger Bands para mejores entradas
-        df['bb_middle'] = df['price'].rolling(10).mean()
-        df['bb_std'] = df['price'].rolling(10).std()
-        df['bb_upper'] = df['bb_middle'] + (df['bb_std'] * 1.5)
-        df['bb_lower'] = df['bb_middle'] - (df['bb_std'] * 1.5)
+        # Bollinger Bands ajustadas
+        df['bb_middle'] = df['price'].rolling(8).mean()
+        df['bb_std'] = df['price'].rolling(8).std()
+        df['bb_upper'] = df['bb_middle'] + (df['bb_std'] * 1.2)
+        df['bb_lower'] = df['bb_middle'] - (df['bb_std'] * 1.2)
         
         latest = df.iloc[-1]
         
@@ -436,8 +332,8 @@ class MexcFuturesTradingBot:
             'momentum': latest['momentum'],
             'price_deviation': latest['price_deviation'],
             'current_price': latest['price'],
-            'sma_5': latest['sma_5'],
-            'sma_10': latest['sma_10'],
+            'sma_3': latest['sma_3'],
+            'sma_8': latest['sma_8'],
             'rsi': latest['rsi'],
             'volatility': latest['volatility'],
             'macd': latest['macd'],
@@ -448,7 +344,7 @@ class MexcFuturesTradingBot:
         }
 
     def trading_strategy(self, indicators: dict) -> str:
-        """Estrategia FUTURES con posiciones largas y cortas"""
+        """ESTRATEGIA INVERSA - Opera en dirección contraria a las señales"""
         if not indicators:
             return 'hold'
         
@@ -462,28 +358,28 @@ class MexcFuturesTradingBot:
         bb_upper = indicators['bb_upper']
         bb_lower = indicators['bb_lower']
         
-        if np.isnan(rsi):
-            return 'hold'
+        # ESTRATEGIA INVERSA - Condiciones OPUESTAS
+        # Si antes compraba, ahora vende y viceversa
         
-        # SEÑALES LARGAS (COMPRA)
-        long_conditions = [
-            momentum > self.momentum_threshold,
-            rsi < 60,
-            macd > macd_signal,
-            current_price < bb_lower,
-            volatility < 0.02
-        ]
-        
-        # SEÑALES CORTAS (VENTA)
+        # SEÑAL DE VENTA (SHORT) - Cuando antes compraba
         short_conditions = [
-            momentum < -self.momentum_threshold,
-            rsi > 70,
-            macd < macd_signal,
-            current_price > bb_upper,
-            volatility < 0.02
+            momentum > self.momentum_threshold,      # Momentum fuerte → VENDER
+            rsi > 40,                               # No sobrevendido → VENDER  
+            macd > macd_signal,                     # Tendencia alcista → VENDER
+            current_price > bb_lower,               # Precio no en soporte → VENDER
+            volatility < 0.015                      # Mercado estable → VENDER
         ]
         
-        # TOMA DE GANANCIAS Y STOP LOSS CON APALANCAMIENTO
+        # SEÑAL DE COMPRA (LONG) - Cuando antes vendía
+        long_conditions = [
+            momentum < -self.momentum_threshold,     # Momentum bajista → COMPRAR
+            rsi < 60,                               # No sobrecomprado → COMPRAR
+            macd < macd_signal,                     # Tendencia bajista → COMPRAR
+            current_price < bb_upper,               # Precio no en resistencia → COMPRAR
+            self.position == 0                      # Solo si no hay posición
+        ]
+        
+        # GESTIÓN DE POSICIÓN ABIERTA - ESTRATEGIA INVERSA
         if self.position > 0:
             if self.position_side == 'long':
                 current_profit_pct = (current_price - self.entry_price) / self.entry_price
@@ -492,226 +388,186 @@ class MexcFuturesTradingBot:
                 current_profit_pct = (self.entry_price - current_price) / self.entry_price
                 current_loss_pct = (current_price - self.entry_price) / self.entry_price
             
-            # Aplicar apalancamiento 3x a ganancias/pérdidas
-            leveraged_profit = current_profit_pct * self.leverage
-            leveraged_loss = current_loss_pct * self.leverage
-            
-            if leveraged_profit >= self.min_profit_target:
-                self.log_message(f"🎯 TOMANDO GANANCIAS {self.leverage}x: {leveraged_profit:.3%} (+)", "PROFIT")
+            # TOMA DE GANANCIAS INVERSA - Más agresiva en ganancias
+            if current_profit_pct >= self.min_profit_target:
+                self.log_message(f"🎯 TOMANDO GANANCIAS INVERSA: {current_profit_pct:.3%} (+)", "PROFIT")
                 return 'close'
             
-            if leveraged_loss >= self.max_loss_stop:
-                self.log_message(f"🛑 STOP LOSS {self.leverage}x: {leveraged_loss:.3%} (-)", "LOSS")
+            # STOP LOSS INVERSO - Más protector
+            if current_loss_pct >= self.max_loss_stop:
+                self.log_message(f"🛑 STOP LOSS INVERSO: {current_loss_pct:.3%} (-)", "LOSS")
                 return 'close'
         
-        # SEÑALES PRINCIPALES
-        if sum(long_conditions) >= 4 and not self.position:
-            self.log_message(f"✅ SEÑAL LONG: momentum={momentum:.4f}, RSI={rsi:.1f}", "SIGNAL")
-            self.position_side = 'long'
-            return 'buy'
-        elif sum(short_conditions) >= 4 and not self.position:
-            self.log_message(f"🔻 SEÑAL SHORT: momentum={momentum:.4f}, RSI={rsi:.1f}", "SIGNAL")
-            self.position_side = 'short'
+        # SEÑALES PRINCIPALES INVERSAS
+        if sum(short_conditions) >= 3 and self.position == 0:  # VENDER (SHORT)
+            self.log_message(f"🔥 SEÑAL VENTA INVERSA: momentum={momentum:.4f}, RSI={rsi:.1f}", "SIGNAL")
             return 'sell'
+        elif sum(long_conditions) >= 3 and self.position == 0:  # COMPRAR (LONG)
+            self.log_message(f"🔥 SEÑAL COMPRA INVERSA: momentum={momentum:.4f}, RSI={rsi:.1f}", "SIGNAL")
+            return 'buy'
         
         return 'hold'
 
     def execute_trade(self, action: str, price: float):
-        """Ejecutar operación FUTURES con apalancamiento"""
+        """Ejecutar operación en FUTUROS - ESTRATEGIA INVERSA"""
         try:
             investment_amount = 0
             quantity = 0
-            quantity_to_sell = 0
-            sale_amount = 0
+            quantity_to_close = 0
+            close_amount = 0
             profit_loss = 0
             
-            if action == 'buy' and not self.position:
-                # ENTRADA LONG
-                investment_amount = self.cash_balance * self.position_size
-                quantity = (investment_amount * self.leverage) / price
+            if action in ['buy', 'sell'] and self.position == 0:
+                # ABRIR POSICIÓN
+                investment_amount = self.cash_balance * self.position_size * self.leverage
+                quantity = investment_amount / price
                 
-                if investment_amount > self.cash_balance:
-                    self.log_message("❌ Fondos insuficientes", "ERROR")
+                if investment_amount > self.cash_balance * self.leverage:
+                    self.log_message("❌ Margen insuficiente", "ERROR")
                     return
                 
-                self.cash_balance -= investment_amount
-                self.position += quantity
+                # Actualizar balances
+                self.cash_balance -= (investment_amount / self.leverage)  # Margen utilizado
+                self.position = quantity
                 self.entry_price = price
-                self.open_positions += 1
-                self.position_side = 'long'
+                self.position_side = 'long' if action == 'buy' else 'short'
+                self.open_positions = 1
                 
-                trade_info = f"✅ LONG {self.leverage}x: {quantity:.6f} {self.symbol} @ ${price:.2f} | Inversión: ${investment_amount:.2f} | Exposición: ${investment_amount * self.leverage:.2f}"
-                self.log_message(trade_info, "TRADE")
-                
-            elif action == 'sell' and not self.position:
-                # ENTRADA SHORT
-                investment_amount = self.cash_balance * self.position_size
-                quantity = (investment_amount * self.leverage) / price
-                
-                if investment_amount > self.cash_balance:
-                    self.log_message("❌ Fondos insuficientes", "ERROR")
-                    return
-                
-                self.cash_balance -= investment_amount
-                self.position += quantity
-                self.entry_price = price
-                self.open_positions += 1
-                self.position_side = 'short'
-                
-                trade_info = f"🔻 SHORT {self.leverage}x: {quantity:.6f} {self.symbol} @ ${price:.2f} | Inversión: ${investment_amount:.2f} | Exposición: ${investment_amount * self.leverage:.2f}"
+                side_emoji = "🟢" if action == 'buy' else "🔴"
+                trade_info = f"{side_emoji} ABRIR {self.position_side.upper()}: {quantity:.6f} {self.symbol} @ ${price:.2f} | Margen: ${investment_amount/self.leverage:.2f} | Leverage: {self.leverage}x"
                 self.log_message(trade_info, "TRADE")
                 
             elif action == 'close' and self.position > 0:
                 # CERRAR POSICIÓN
-                quantity_to_sell = self.position
+                quantity_to_close = self.position
                 
                 if self.position_side == 'long':
-                    sale_amount = quantity_to_sell * price
-                    profit_loss = (sale_amount - (self.position * self.entry_price)) / self.leverage
+                    close_amount = quantity_to_close * price
+                    profit_loss = (close_amount - (self.position * self.entry_price)) * self.leverage
                 else:  # short
-                    sale_amount = quantity_to_sell * self.entry_price
-                    profit_loss = ((self.position * self.entry_price) - (quantity_to_sell * price)) / self.leverage
+                    close_amount = quantity_to_close * price
+                    profit_loss = ((self.position * self.entry_price) - close_amount) * self.leverage
                 
                 # Actualizar balances
-                self.cash_balance += (investment_amount + profit_loss) if action == 'close' else sale_amount
+                self.cash_balance += (self.position * self.entry_price / self.leverage) + profit_loss
                 self.position = 0
                 self.open_positions = 0
+                self.position_side = ''
                 self.total_profit += profit_loss
                 
-                profit_color = "💰" if profit_loss > 0 else "📉"
-                side_str = "LONG" if self.position_side == 'long' else "SHORT"
-                trade_info = f"{profit_color} CLOSE {side_str}: P/L: ${profit_loss:.4f} | Profit Total: ${self.total_profit:.2f}"
+                profit_color = "🟢" if profit_loss > 0 else "🔴"
+                trade_info = f"{profit_color} CERRAR: {quantity_to_close:.6f} {self.symbol} @ ${price:.2f} | P/L: ${profit_loss:.4f} | Profit Total: ${self.total_profit:.2f}"
                 self.log_message(trade_info, "TRADE")
-                
-                self.position_side = None
             
             # Registrar posición
-            current_equity = self.cash_balance + (self.position * price / self.leverage)
+            current_equity = self.cash_balance + (self.position * self.entry_price / self.leverage if self.position > 0 else 0)
             self.positions_history.append({
                 'timestamp': datetime.now(),
                 'action': action,
+                'side': self.position_side if action != 'close' else '',
+                'leverage': self.leverage if action != 'close' else '',
                 'price': price,
-                'quantity': quantity_to_sell if action == 'close' else quantity,
-                'investment': investment_amount,
+                'quantity': quantity_to_close if action == 'close' else quantity,
                 'cash_balance': self.cash_balance,
-                'position_value': self.position * price / self.leverage,
                 'total_equity': current_equity,
-                'open_positions': self.open_positions,
-                'profit_loss': profit_loss if action == 'close' else 0,
-                'position_side': self.position_side,
-                'leverage': self.leverage
+                'profit_loss': profit_loss if action == 'close' else 0
             })
             
             self.save_state()
             
         except Exception as e:
-            self.log_message(f"❌ Error ejecutando trade futures: {e}", "ERROR")
+            self.log_message(f"Error ejecutando trade futuros: {e}", "ERROR")
 
     def close_all_positions(self):
         """Cerrar todas las posiciones abiertas"""
         if self.position > 0:
-            if self.tick_data:
-                tick_data = list(self.tick_data)[-1]
-            else:
-                tick_data = self.get_ticker_price()
+            tick_data = self.get_futures_price()
             price = tick_data['bid'] if self.position_side == 'long' else tick_data['ask']
             self.execute_trade('close', price)
-            self.log_message("🛑 TODAS las posiciones futures cerradas", "INFO")
+            self.log_message("🧹 TODAS las posiciones futuros cerradas", "INFO")
 
     def reset_account(self):
         """Reiniciar cuenta a estado inicial"""
-        self.cash_balance = 250.0
+        self.cash_balance = 255.0  # CAPITAL INICIAL $255
         self.position = 0
+        self.position_side = ''
         self.entry_price = 0
         self.positions_history.clear()
         self.open_positions = 0
         self.log_messages.clear()
         self.tick_data.clear()
         self.total_profit = 0
-        self.position_side = None
-        self.current_price_data = None
-        self.last_price_update = 0
-        self.log_message("🔄 Cuenta futures reiniciada a $250.00", "INFO")
+        self.log_message("🔄 Cuenta futuros reiniciada a $255.00", "INFO")
         self.save_state()
 
     def trading_cycle(self):
-        """Ciclo principal de trading FUTURES - OPTIMIZADO"""
-        self.log_message(f"🚀 Iniciando ciclo de trading FUTURES {self.leverage}x - RIESGO {self.risk_per_trade*100}%")
-        
-        consecutive_errors = 0
-        max_consecutive_errors = 5
+        """Ciclo principal de trading HFT"""
+        self.log_message("🚀 Iniciando HFT Futuros - ESTRATEGIA INVERSA ACTIVADA")
         
         while self.is_running:
             try:
-                tick_data = self.get_ticker_price()
+                tick_data = self.get_futures_price()
                 if tick_data:
                     self.tick_data.append(tick_data)
-                    consecutive_errors = 0  # Reset error counter on success
-                else:
-                    consecutive_errors += 1
-                
-                # Si hay muchos errores consecutivos, esperar más tiempo
-                sleep_time = 5 if consecutive_errors > 3 else 2
                 
                 indicators = self.calculate_indicators()
                 
-                if indicators and len(self.tick_data) >= 10:
+                if indicators and len(self.tick_data) >= 15:
                     signal = self.trading_strategy(indicators)
                     if signal != 'hold':
-                        if signal == 'buy':
-                            price = tick_data['ask']
-                        elif signal == 'sell':
-                            price = tick_data['bid']
-                        else:  # close
-                            price = tick_data['bid'] if self.position_side == 'long' else tick_data['ask']
+                        price = tick_data['ask'] if signal == 'buy' else tick_data['bid']
                         self.execute_trade(signal, price)
                 
-                time.sleep(sleep_time)
+                time.sleep(0.8)  # HFT: 800ms entre ciclos
                 
             except Exception as e:
-                consecutive_errors += 1
-                if consecutive_errors <= max_consecutive_errors:
-                    self.log_message(f"❌ Error en ciclo de trading ({consecutive_errors}/{max_consecutive_errors}): {str(e)[:100]}", "ERROR")
-                else:
-                    self.log_message("🛑 Demasiados errores consecutivos, revisar conexión", "CRITICAL")
-                
-                # Esperar más tiempo después de errores
-                sleep_time = min(10 + consecutive_errors * 2, 30)  # Máximo 30 segundos
-                time.sleep(sleep_time)
+                self.log_message(f"Error en ciclo HFT: {e}", "ERROR")
+                time.sleep(2)
 
     def start_trading(self):
-        """Iniciar bot de trading futures"""
+        """Iniciar bot de trading HFT"""
         if not self.is_running:
             self.is_running = True
             self.trading_thread = threading.Thread(target=self.trading_cycle, daemon=True)
             self.trading_thread.start()
-            self.log_message(f"🤖 Bot Futures {self.leverage}x iniciado - RIESGO CONTROLADO")
+            self.log_message("✅ Bot HFT Futuros iniciado - ESTRATEGIA INVERSA ACTIVADA")
 
     def stop_trading(self):
         """Detener bot de trading"""
         self.is_running = False
-        self.log_message("🛑 Bot de trading futures detenido")
+        self.log_message("⏹️ Bot HFT Futuros detenido")
 
     def get_performance_stats(self):
         """Obtener estadísticas de performance"""
         current_price = list(self.tick_data)[-1]['bid'] if self.tick_data else 0
-        position_value = self.position * current_price / self.leverage
-        total_equity = self.cash_balance + position_value
-        total_profit = total_equity - 250.0
+        
+        # Calcular equity considerando posición abierta
+        if self.position > 0:
+            if self.position_side == 'long':
+                position_value = self.position * current_price
+                unrealized_pl = (position_value - (self.position * self.entry_price)) * self.leverage
+            else:  # short
+                position_value = self.position * current_price
+                unrealized_pl = ((self.position * self.entry_price) - position_value) * self.leverage
+            
+            total_equity = self.cash_balance + unrealized_pl
+        else:
+            total_equity = self.cash_balance
+        
+        total_profit = total_equity - 255.0  # Desde capital inicial
         
         stats = {
-            'total_trades': len(self.positions_history),
+            'total_trades': len([p for p in self.positions_history if p['action'] in ['buy', 'sell']]),
             'win_rate': 0,
             'cash_balance': self.cash_balance,
-            'position_value': position_value,
             'total_equity': total_equity,
             'open_positions': self.open_positions,
             'current_price': current_price,
             'total_profit': total_profit,
             'position_size': self.position,
+            'position_side': self.position_side,
             'realized_profit': self.total_profit,
-            'leverage': self.leverage,
-            'position_side': self.position_side
+            'leverage': self.leverage
         }
         
         if not self.positions_history:
@@ -721,17 +577,14 @@ class MexcFuturesTradingBot:
         close_trades = [t for t in self.positions_history if t['action'] == 'close']
         
         if close_trades:
-            profitable_trades = 0
-            for trade in self.positions_history:
-                if trade['action'] == 'close' and trade.get('profit_loss', 0) > 0:
-                    profitable_trades += 1
-            
+            profitable_trades = len([t for t in close_trades if t.get('profit_loss', 0) > 0])
             stats['win_rate'] = (profitable_trades / len(close_trades)) * 100 if close_trades else 0
         
         return stats
 
 def main():
-    st.title("🤖 Bot Futures MEXC 3x - APALANCAMIENTO CONTROLADO 🚀")
+    st.title("🤖 Bot HFT Futuros MEXC - ESTRATEGIA INVERSA 🚀")
+    st.markdown("**CAPITAL INICIAL: $255.00 | APALANCAMIENTO: 3x | MÁXIMA PROTECCIÓN**")
     st.markdown("---")
     
     # Inicializar el bot
@@ -742,50 +595,50 @@ def main():
     
     # Sidebar
     with st.sidebar:
-        st.header("⚙️ Configuración Futures")
+        st.header("⚙️ Configuración Futuros")
         
         api_key = st.text_input("API Key MEXC", type="password")
         secret_key = st.text_input("Secret Key MEXC", type="password")
-        symbol = st.selectbox("Símbolo", ["BTCUSDT", "ETHUSDT", "ADAUSDT", "DOTUSDT", "LINKUSDT"])
+        symbol = st.selectbox("Símbolo Futuros", ["BTCUSDT", "ETHUSDT", "ADAUSDT", "DOTUSDT", "LINKUSDT"])
         
         bot.api_key = api_key
         bot.secret_key = secret_key
         bot.symbol = symbol
         
         st.markdown("---")
-        st.header("🎮 Control del Bot")
+        st.header("🎯 Control HFT Futuros")
         
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("▶️ Iniciar Bot", use_container_width=True):
+            if st.button("🚀 Iniciar HFT", use_container_width=True, type="primary"):
                 bot.start_trading()
                 st.rerun()
         
         with col2:
-            if st.button("⏹️ Detener Bot", use_container_width=True):
+            if st.button("⏹️ Detener HFT", use_container_width=True):
                 bot.stop_trading()
                 st.rerun()
         
-        if st.button("🛑 Cerrar Todas las Posiciones", use_container_width=True):
+        if st.button("🧹 Cerrar Posición", use_container_width=True):
             bot.close_all_positions()
             st.rerun()
             
-        if st.button("🔄 Reiniciar Cuenta", use_container_width=True):
+        if st.button("🔄 Reiniciar $255", use_container_width=True):
             bot.reset_account()
             st.rerun()
         
         st.markdown("---")
-        st.header("📊 Configuración Futures")
-        st.info(f"**Apalancamiento:** {bot.leverage}x")
-        st.info(f"**Riesgo por operación:** {bot.risk_per_trade*100}%")
+        st.header("💰 Configuración HFT")
         st.info(f"**Tamaño posición:** {bot.position_size*100}%")
-        st.info(f"**Target ganancia:** {bot.min_profit_target*100}% ({bot.min_profit_target*bot.leverage*100:.1f}% con {bot.leverage}x)")
-        st.info(f"**Stop loss:** {bot.max_loss_stop*100}% ({bot.max_loss_stop*bot.leverage*100:.1f}% con {bot.leverage}x)")
+        st.info(f"**Target ganancia:** {bot.min_profit_target*100}%")
+        st.info(f"**Stop loss:** {bot.max_loss_stop*100}%")
+        st.info(f"**Apalancamiento:** {bot.leverage}x")
+        st.info(f"**Operaciones máx:** {bot.max_positions}")
         
         if bot.is_running:
-            st.success(f"✅ Bot Futures {bot.leverage}x Ejecutándose")
+            st.success("✅ HFT EJECUTÁNDOSE - ESTRATEGIA INVERSA")
         else:
-            st.warning("🛑 Bot Detenido")
+            st.warning("⏸️ HFT DETENIDO")
             
         if bot.tick_data:
             latest_tick = list(bot.tick_data)[-1]
@@ -799,26 +652,26 @@ def main():
     
     with col1:
         st.metric(
-            label="💰 Cash Disponible",
+            label="💰 Margen Disponible",
             value=f"${stats['cash_balance']:.2f}",
             delta=f"${stats['realized_profit']:.2f}" if stats['realized_profit'] != 0 else None
         )
     
     with col2:
         st.metric(
-            label="📈 Precio Actual",
+            label="📈 Precio Futuros",
             value=f"${stats['current_price']:.2f}"
         )
     
     with col3:
         st.metric(
-            label="🎯 Tasa de Acierto",
+            label="🎯 Tasa Acierto",
             value=f"{stats['win_rate']:.1f}%"
         )
     
     with col4:
         st.metric(
-            label="📊 Total Operaciones",
+            label="📊 Operaciones",
             value=f"{stats['total_trades']}"
         )
     
@@ -826,16 +679,16 @@ def main():
     col5, col6, col7, col8 = st.columns(4)
     
     with col5:
+        position_status = f"{stats['position_side'].upper()}" if stats['position_side'] else "SIN POSICIÓN"
         st.metric(
-            label="⚡ Apalancamiento",
-            value=f"{stats['leverage']}x"
+            label="🔓 Posición Actual",
+            value=position_status
         )
     
     with col6:
-        position_status = "LONG" if stats['position_side'] == 'long' else "SHORT" if stats['position_side'] == 'short' else "CASH"
         st.metric(
-            label="📊 Posición Actual",
-            value=position_status
+            label="📦 Tamaño Pos",
+            value=f"{stats['position_size']:.6f}"
         )
     
     with col7:
@@ -845,23 +698,22 @@ def main():
         )
     
     with col8:
-        status = "🎪 LIVE" if bot.is_running else "🛑 STOP"
+        leverage_info = f"{stats['leverage']}x" if stats['position_side'] else "---"
         st.metric(
-            label="🎪 Estado",
-            value=status
+            label="⚡ Apalancamiento",
+            value=leverage_info
         )
     
     st.markdown("---")
     
     # Gráficos y datos
-    tab1, tab2, tab3 = st.tabs(["📈 Gráfico de Precios", "📋 Historial de Operaciones", "📝 Logs del Sistema"])
+    tab1, tab2, tab3 = st.tabs(["📈 Precios Futuros", "📋 Operaciones Futuros", "📝 Logs HFT"])
     
     with tab1:
         if bot.tick_data:
             prices = [tick['bid'] for tick in list(bot.tick_data)]
             timestamps = [tick['timestamp'] for tick in list(bot.tick_data)]
             
-            # Asegurarse de que los timestamps sean datetime
             valid_timestamps = []
             valid_prices = []
             for ts, price in zip(timestamps, prices):
@@ -879,19 +731,17 @@ def main():
                     line=dict(color='#00ff88', width=2)
                 ))
                 
-                if len(valid_prices) >= 10:
-                    df = pd.DataFrame({'price': valid_prices})
-                    df['sma_10'] = df['price'].rolling(10).mean()
-                    fig.add_trace(go.Scatter(
-                        x=valid_timestamps[9:],
-                        y=df['sma_10'].dropna(),
-                        mode='lines',
-                        name='SMA 10',
-                        line=dict(color='#ffaa00', width=1, dash='dash')
-                    ))
+                # Mostrar posición actual si existe
+                if bot.position > 0 and bot.entry_price > 0:
+                    fig.add_hline(
+                        y=bot.entry_price, 
+                        line_dash="dash", 
+                        line_color="yellow",
+                        annotation_text=f"Entrada: ${bot.entry_price:.2f}"
+                    )
                 
                 fig.update_layout(
-                    title=f"Precio Futures de {bot.symbol} en Tiempo Real",
+                    title=f"Precio Futuros {bot.symbol} - HFT",
                     xaxis_title="Tiempo",
                     yaxis_title="Precio (USD)",
                     template="plotly_dark",
@@ -902,18 +752,18 @@ def main():
             else:
                 st.info("No hay datos válidos para graficar")
         else:
-            st.info("Esperando datos de mercado...")
+            st.info("Esperando datos de futuros...")
     
     with tab2:
         if bot.positions_history:
-            # Crear DataFrame seguro
+            # Crear DataFrame para futuros
             display_data = []
             for pos in bot.positions_history:
                 row = {
                     'timestamp': pos['timestamp'].strftime('%H:%M:%S') if isinstance(pos['timestamp'], datetime) else str(pos['timestamp']),
                     'action': pos['action'],
-                    'side': pos.get('position_side', 'N/A'),
-                    'leverage': f"{pos.get('leverage', 1)}x",
+                    'side': pos.get('side', ''),
+                    'leverage': pos.get('leverage', ''),
                     'price': f"${pos['price']:.2f}",
                     'quantity': f"{pos['quantity']:.6f}",
                     'cash_balance': f"${pos['cash_balance']:.2f}",
@@ -925,19 +775,19 @@ def main():
             df = pd.DataFrame(display_data)
             st.dataframe(df, use_container_width=True, height=400)
         else:
-            st.info("No hay operaciones futures registradas aún.")
+            st.info("No hay operaciones de futuros registradas aún.")
     
     with tab3:
         log_container = st.container(height=400)
         with log_container:
-            for log_entry in reversed(bot.log_messages[-20:]):
+            for log_entry in reversed(bot.log_messages[-30:]):  # Más logs
                 if "ERROR" in log_entry:
                     st.error(log_entry)
                 elif "TRADE" in log_entry:
-                    if "LONG" in log_entry or "SHORT" in log_entry:
+                    if "ABRIR" in log_entry:
                         st.success(log_entry)
-                    elif "CLOSE" in log_entry:
-                        if "📉" in log_entry:
+                    elif "CERRAR" in log_entry:
+                        if "🔴" in log_entry:
                             st.error(log_entry)
                         else:
                             st.success(log_entry)
@@ -948,9 +798,9 @@ def main():
                 else:
                     st.info(log_entry)
     
-    # Auto-refresh
+    # Auto-refresh más rápido para HFT
     if bot.is_running:
-        time.sleep(5)
+        time.sleep(3)
         st.rerun()
 
 if __name__ == "__main__":
