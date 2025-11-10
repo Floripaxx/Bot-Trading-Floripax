@@ -30,14 +30,14 @@ class MexcHighFrequencyTradingBot:
         # Cargar estado desde archivo o inicializar
         self.load_state()
         
-        # Configuración HFT OPTIMIZADA PARA MAYORES GANANCIAS
-        self.position_size = 0.20  # MODIFICADO: 20% para mayores ganancias
-        self.max_positions = 4     # MODIFICADO: 4 posiciones máximas
-        self.momentum_threshold = 0.0035  # AUMENTADO: 0.35% para señales más fuertes
-        self.mean_reversion_threshold = 0.0025  # AUMENTADO ligeramente
-        self.volatility_multiplier = 1.5
-        self.min_profit_target = 0.015  # MODIFICADO: 1.5% de ganancia mínima
-        self.max_loss_stop = 0.006     # MODIFICADO: 0.6% de stop loss
+        # Configuración HFT ULTRA-RÁPIDO - MÁS OPERACIONES
+        self.position_size = 0.15       # MODIFICADO: 15% por operación
+        self.max_positions = 1          # MODIFICADO: SOLO 1 posición máxima
+        self.momentum_threshold = 0.001 # MODIFICADO: 0.1% para señales más sensibles
+        self.mean_reversion_threshold = 0.0015  # MODIFICADO: Más sensible
+        self.volatility_multiplier = 1.8        # MODIFICADO: Más tolerante a volatilidad
+        self.min_profit_target = 0.003  # MODIFICADO: 0.3% de ganancia mínima
+        self.max_loss_stop = 0.002      # MODIFICADO: 0.2% de stop loss
         
         self.trading_thread = None
         
@@ -437,7 +437,7 @@ class MexcHighFrequencyTradingBot:
             
             if action == 'buy':
                 if self.open_positions < self.max_positions:
-                    # Inversión más grande (20% del balance)
+                    # Inversión más grande (15% del balance)
                     investment_amount = self.cash_balance * self.position_size
                     quantity = investment_amount / price
                     
@@ -516,7 +516,7 @@ class MexcHighFrequencyTradingBot:
 
     def trading_cycle(self):
         """Ciclo principal de trading"""
-        self.log_message("🚀 Iniciando ciclo de trading HFT - ESTRATEGIA OPTIMIZADA")
+        self.log_message("🚀 Iniciando ciclo de trading HFT ULTRA-RÁPIDO - MÁS OPERACIONES")
         
         while self.is_running:
             try:
@@ -544,7 +544,7 @@ class MexcHighFrequencyTradingBot:
             self.is_running = True
             self.trading_thread = threading.Thread(target=self.trading_cycle, daemon=True)
             self.trading_thread.start()
-            self.log_message("🤖 Bot de trading iniciado - ESTRATEGIA AGRESIVA ACTIVADA")
+            self.log_message("🤖 Bot de trading ULTRA-RÁPIDO iniciado - MÁS OPERACIONES")
 
     def stop_trading(self):
         """Detener bot de trading"""
@@ -588,7 +588,7 @@ class MexcHighFrequencyTradingBot:
         return stats
 
 def main():
-    st.title("🤖 Bot HFT MEXC - VERSIÓN OPTIMIZADA 🚀")
+    st.title("🤖 Bot HFT MEXC - ESTRATEGIA ULTRA-RÁPIDA 🚀")
     st.markdown("---")
     
     # Inicializar el bot
@@ -636,9 +636,10 @@ def main():
         st.info(f"**Tamaño posición:** {bot.position_size*100}%")
         st.info(f"**Target ganancia:** {bot.min_profit_target*100}%")
         st.info(f"**Stop loss:** {bot.max_loss_stop*100}%")
+        st.info(f"**Posiciones máx:** {bot.max_positions}")
         
         if bot.is_running:
-            st.success("✅ Bot Ejecutándose - ESTRATEGIA AGRESIVA")
+            st.success("✅ Bot Ejecutándose - ESTRATEGIA ULTRA-RÁPIDA")
         else:
             st.warning("🛑 Bot Detenido")
             
