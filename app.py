@@ -14,8 +14,8 @@ import os
 
 # Configurar la página de Streamlit
 st.set_page_config(
-    page_title="🚀 Bot HFT Futuros MEXC - ESTRATEGIA MOMENTUM",
-    page_icon="🚀",
+    page_title="🤖 Bot HFT Futuros MEXC - ESTRATEGIA INVERSA",
+    page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -30,19 +30,17 @@ class MexcFuturesTradingBot:
         # Cargar estado desde archivo o inicializar
         self.load_state()
         
-        # *** SOLO CAMBIO: NUEVA ESTRATEGIA MOMENTUM HFT ***
-        self.leverage = 3
-        self.position_size = 0.08  # 8% del capital por operación
-        self.max_positions = 1
+        # CONFIGURACIÓN HFT FUTUROS - ESTRATEGIA INVERSA
+        self.leverage = 3  # Apalancamiento conservador
+        self.position_size = 0.08  # 8% del capital por operación (REDUCIDO)
+        self.max_positions = 1     # 1 operación a la vez (MAXIMA SEGURIDAD)
+        self.momentum_threshold = 0.0012  # Umbral más sensible
+        self.mean_reversion_threshold = 0.001
+        self.volatility_multiplier = 1.8
         
-        # PARÁMETROS ESTRATEGIA MOMENTUM
-        self.ema_fast_period = 8
-        self.ema_slow_period = 21
-        self.volume_multiplier = 2.0
-        self.stop_loss_pct = 0.08    # 0.08% stop loss
-        self.take_profit_pct = 0.12  # 0.12% take profit
-        
-        # *** FIN CAMBIO ESTRATEGIA ***
+        # TARGETS MÁS CONSERVADORES - ESTRATEGIA INVERSA
+        self.min_profit_target = 0.0025  # 0.25% target (INVERTIDO)
+        self.max_loss_stop = 0.0015     # 0.15% stop loss (ESTRICTO)
         
         self.trading_thread = None
         
@@ -293,77 +291,94 @@ class MexcFuturesTradingBot:
             'source': 'Futures Simulation'
         }
 
-    # *** SOLO CAMBIO: NUEVA FUNCIÓN DE INDICADORES MOMENTUM ***
     def calculate_indicators(self) -> dict:
-        """Calcular indicadores para estrategia MOMENTUM HFT"""
-        if len(self.tick_data) < 30:  # Necesitamos más datos para EMAs
+        """Calcular indicadores técnicos OPTIMIZADOS PARA HFT"""
+        if len(self.tick_data) < 15:
             return {}
         
         prices = [tick['bid'] for tick in self.tick_data]
-        volumes = [tick.get('volume', 1000) for tick in self.tick_data]  # Volumen simulado
+        df = pd.DataFrame(prices, columns=['price'])
         
-        df = pd.DataFrame({
-            'price': prices,
-            'volume': volumes
-        })
+        # Indicadores ULTRA RÁPIDOS para HFT
+        df['returns'] = df['price'].pct_change()
+        df['momentum'] = df['returns'].rolling(2).mean()  # Ventana MUY corta
+        df['sma_3'] = df['price'].rolling(3).mean()  # SMA más corta
+        df['sma_8'] = df['price'].rolling(8).mean()
+        df['price_deviation'] = (df['price'] - df['sma_3']) / df['sma_3']
+        df['volatility'] = df['returns'].rolling(5).std() * self.volatility_multiplier
         
-        # Calcular EMAs para momentum
-        df['ema_fast'] = df['price'].ewm(span=self.ema_fast_period, adjust=False).mean()
-        df['ema_slow'] = df['price'].ewm(span=self.ema_slow_period, adjust=False).mean()
+        # RSI ultra rápido
+        delta = df['price'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=3).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=3).mean()
+        rs = gain / loss
+        df['rsi'] = 100 - (100 / (1 + rs))
         
-        # Calcular volumen promedio
-        df['volume_avg'] = df['volume'].rolling(window=20).mean()
-        df['volume_ratio'] = df['volume'] / df['volume_avg']
+        # MACD ultra rápido
+        exp8 = df['price'].ewm(span=3, adjust=False).mean()
+        exp16 = df['price'].ewm(span=6, adjust=False).mean()
+        df['macd'] = exp8 - exp16
+        df['macd_signal'] = df['macd'].ewm(span=2, adjust=False).mean()
         
-        # Calcular VWAP
-        typical_price = (df['price'] * 3)  # Simulación de high/low/close
-        df['vwap'] = (typical_price * df['volume']).cumsum() / df['volume'].cumsum()
+        # Bollinger Bands ajustadas
+        df['bb_middle'] = df['price'].rolling(8).mean()
+        df['bb_std'] = df['price'].rolling(8).std()
+        df['bb_upper'] = df['bb_middle'] + (df['bb_std'] * 1.2)
+        df['bb_lower'] = df['bb_middle'] - (df['bb_std'] * 1.2)
         
         latest = df.iloc[-1]
-        previous = df.iloc[-2] if len(df) > 1 else latest
         
         return {
-            'ema_fast': latest['ema_fast'],
-            'ema_slow': latest['ema_slow'],
-            'ema_fast_prev': previous['ema_fast'],
-            'ema_slow_prev': previous['ema_slow'],
-            'volume_ratio': latest['volume_ratio'],
-            'vwap': latest['vwap'],
+            'momentum': latest['momentum'],
+            'price_deviation': latest['price_deviation'],
             'current_price': latest['price'],
-            'returns': latest['price'] / previous['price'] - 1 if len(df) > 1 else 0
+            'sma_3': latest['sma_3'],
+            'sma_8': latest['sma_8'],
+            'rsi': latest['rsi'],
+            'volatility': latest['volatility'],
+            'macd': latest['macd'],
+            'macd_signal': latest['macd_signal'],
+            'bb_upper': latest['bb_upper'],
+            'bb_lower': latest['bb_lower'],
+            'bb_middle': latest['bb_middle']
         }
 
-    # *** SOLO CAMBIO: NUEVA ESTRATEGIA MOMENTUM ***
     def trading_strategy(self, indicators: dict) -> str:
-        """ESTRATEGIA MOMENTUM HFT - EMA Crossover con confirmación volumétrica"""
+        """ESTRATEGIA INVERSA MÁS AGRESIVA - Condiciones relajadas"""
         if not indicators:
             return 'hold'
         
-        ema_fast = indicators['ema_fast']
-        ema_slow = indicators['ema_slow']
-        ema_fast_prev = indicators['ema_fast_prev']
-        ema_slow_prev = indicators['ema_slow_prev']
-        volume_ratio = indicators['volume_ratio']
-        vwap = indicators['vwap']
+        momentum = indicators['momentum']
+        deviation = indicators['price_deviation']
+        rsi = indicators['rsi']
+        volatility = indicators['volatility']
+        macd = indicators['macd']
+        macd_signal = indicators['macd_signal']
         current_price = indicators['current_price']
+        bb_upper = indicators['bb_upper']
+        bb_lower = indicators['bb_lower']
         
-        # SEÑAL LONG: EMA rápido cruza arriba EMA lento + volumen + sobre VWAP
-        long_conditions = [
-            ema_fast > ema_slow and ema_fast_prev <= ema_slow_prev,  # EMA crossover
-            volume_ratio >= self.volume_multiplier,                   # Volumen confirmación
-            current_price > vwap,                                     # Tendencia alcista
-            self.position == 0                                        # Sin posición abierta
-        ]
+        # ESTRATEGIA INVERSA - CONDICIONES MÁS RELAJADAS
         
-        # SEÑAL SHORT: EMA rápido cruza abajo EMA lento + volumen + bajo VWAP
+        # SEÑAL DE VENTA (SHORT) - Condiciones más flexibles
         short_conditions = [
-            ema_fast < ema_slow and ema_fast_prev >= ema_slow_prev,  # EMA crossover
-            volume_ratio >= self.volume_multiplier,                   # Volumen confirmación  
-            current_price < vwap,                                     # Tendencia bajista
-            self.position == 0                                        # Sin posición abierta
+            momentum > 0.0008,           # REDUCIDO de 0.0012
+            rsi > 35,                    # REDUCIDO de 40  
+            macd > macd_signal,         
+            current_price > bb_lower * 0.999,  # MÁS FLEXIBLE
+            volatility < 0.02            # AUMENTADO
         ]
         
-        # GESTIÓN DE POSICIÓN ABIERTA
+        # SEÑAL DE COMPRA (LONG) - Condiciones más flexibles
+        long_conditions = [
+            momentum < -0.0008,          # REDUCIDO de -0.0012
+            rsi < 65,                    # AUMENTADO de 60
+            macd < macd_signal,         
+            current_price < bb_upper * 1.001,  # MÁS FLEXIBLE
+            self.position == 0          
+        ]
+        
+        # GESTIÓN DE POSICIÓN ABIERTA - ESTRATEGIA INVERSA
         if self.position > 0:
             if self.position_side == 'long':
                 current_profit_pct = (current_price - self.entry_price) / self.entry_price
@@ -372,28 +387,28 @@ class MexcFuturesTradingBot:
                 current_profit_pct = (self.entry_price - current_price) / self.entry_price
                 current_loss_pct = (current_price - self.entry_price) / self.entry_price
             
-            # TAKE PROFIT
-            if current_profit_pct >= self.take_profit_pct:
-                self.log_message(f"🎯 TOMA DE GANANCIAS: {current_profit_pct:.3%} (+)", "PROFIT")
+            # TOMA DE GANANCIAS INVERSA - Más agresiva en ganancias
+            if current_profit_pct >= self.min_profit_target:
+                self.log_message(f"🎯 TOMANDO GANANCIAS INVERSA: {current_profit_pct:.3%} (+)", "PROFIT")
                 return 'close'
             
-            # STOP LOSS
-            if current_loss_pct >= self.stop_loss_pct:
-                self.log_message(f"🛑 STOP LOSS: {current_loss_pct:.3%} (-)", "LOSS")
+            # STOP LOSS INVERSO - Más protector
+            if current_loss_pct >= self.max_loss_stop:
+                self.log_message(f"🛑 STOP LOSS INVERSO: {current_loss_pct:.3%} (-)", "LOSS")
                 return 'close'
         
-        # SEÑALES PRINCIPALES MOMENTUM
-        if all(long_conditions):
-            self.log_message(f"📈 SEÑAL LONG: EMA{self.ema_fast_period}/{self.ema_slow_period} crossover, Vol: {volume_ratio:.1f}x", "SIGNAL")
-            return 'buy'
-        elif all(short_conditions):
-            self.log_message(f"📉 SEÑAL SHORT: EMA{self.ema_fast_period}/{self.ema_slow_period} crossover, Vol: {volume_ratio:.1f}x", "SIGNAL")
+        # SEÑALES PRINCIPALES INVERSAS - REQUISITOS REDUCIDOS
+        if sum(short_conditions) >= 2 and self.position == 0:  # SOLO 2/5 condiciones (antes 3)
+            self.log_message(f"🔥 SEÑAL VENTA AGRESIVA: momentum={momentum:.4f}, RSI={rsi:.1f}", "SIGNAL")
             return 'sell'
+        elif sum(long_conditions) >= 2 and self.position == 0:  # SOLO 2/5 condiciones (antes 3)
+            self.log_message(f"🔥 SEÑAL COMPRA AGRESIVA: momentum={momentum:.4f}, RSI={rsi:.1f}", "SIGNAL")
+            return 'buy'
         
         return 'hold'
 
     def execute_trade(self, action: str, price: float):
-        """Ejecutar operación en FUTUROS - MANTENIDO ORIGINAL"""
+        """Ejecutar operación en FUTUROS - ESTRATEGIA INVERSA"""
         try:
             investment_amount = 0
             quantity = 0
@@ -468,7 +483,7 @@ class MexcFuturesTradingBot:
             tick_data = self.get_futures_price()
             price = tick_data['bid'] if self.position_side == 'long' else tick_data['ask']
             self.execute_trade('close', price)
-            self.log_message("🔄 TODAS las posiciones futuros cerradas", "INFO")
+            self.log_message("🧹 TODAS las posiciones futuros cerradas", "INFO")
 
     def reset_account(self):
         """Reiniciar cuenta a estado inicial"""
@@ -486,7 +501,7 @@ class MexcFuturesTradingBot:
 
     def trading_cycle(self):
         """Ciclo principal de trading HFT"""
-        self.log_message("🚀 Iniciando HFT Futuros - ESTRATEGIA MOMENTUM ACTIVADA")
+        self.log_message("🚀 Iniciando HFT Futuros - ESTRATEGIA INVERSA AGRESIVA ACTIVADA")
         
         while self.is_running:
             try:
@@ -496,7 +511,7 @@ class MexcFuturesTradingBot:
                 
                 indicators = self.calculate_indicators()
                 
-                if indicators and len(self.tick_data) >= 30:  # Más datos necesarios
+                if indicators and len(self.tick_data) >= 15:
                     signal = self.trading_strategy(indicators)
                     if signal != 'hold':
                         price = tick_data['ask'] if signal == 'buy' else tick_data['bid']
@@ -514,18 +529,19 @@ class MexcFuturesTradingBot:
             self.is_running = True
             self.trading_thread = threading.Thread(target=self.trading_cycle, daemon=True)
             self.trading_thread.start()
-            self.log_message("✅ Bot HFT Futuros iniciado - ESTRATEGIA MOMENTUM ACTIVADA")
+            self.log_message("✅ Bot HFT Futuros iniciado - ESTRATEGIA INVERSA AGRESIVA ACTIVADA")
 
     def stop_trading(self):
         """Detener bot de trading"""
         self.is_running = False
-        self.log_message("🛑 Bot HFT Futuros detenido")
+        self.log_message("⏹️ Bot HFT Futuros detenido")
 
     def get_performance_stats(self):
         """Obtener estadísticas de performance"""
         current_price = list(self.tick_data)[-1]['bid'] if self.tick_data else 0
         
         # Calcular equity considerando posición abierta
+
         if self.position > 0:
             if self.position_side == 'long':
                 position_value = self.position * current_price
@@ -567,8 +583,8 @@ class MexcFuturesTradingBot:
         return stats
 
 def main():
-    st.title("🚀 Bot HFT Futuros MEXC - ESTRATEGIA MOMENTUM 🚀")
-    st.markdown("**CAPITAL INICIAL: $255.00 | APALANCAMIENTO: 3x | ESTRATEGIA: MOMENTUM HFT**")
+    st.title("🤖 Bot HFT Futuros MEXC - ESTRATEGIA INVERSA AGRESIVA 🚀")
+    st.markdown("**CAPITAL INICIAL: $255.00 | APALANCAMIENTO: 3x | ESTRATEGIA AGRESIVA**")
     st.markdown("---")
     
     # Inicializar el bot
@@ -579,7 +595,7 @@ def main():
     
     # Sidebar
     with st.sidebar:
-        st.header("🔧 Configuración Futuros")
+        st.header("⚙️ Configuración Futuros")
         
         api_key = st.text_input("API Key MEXC", type="password")
         secret_key = st.text_input("Secret Key MEXC", type="password")
@@ -590,20 +606,20 @@ def main():
         bot.symbol = symbol
         
         st.markdown("---")
-        st.header("🎮 Control HFT Futuros")
+        st.header("🎯 Control HFT Futuros")
         
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("✅ Iniciar HFT", use_container_width=True, type="primary"):
+            if st.button("🚀 Iniciar HFT", use_container_width=True, type="primary"):
                 bot.start_trading()
                 st.rerun()
         
         with col2:
-            if st.button("🛑 Detener HFT", use_container_width=True):
+            if st.button("⏹️ Detener HFT", use_container_width=True):
                 bot.stop_trading()
                 st.rerun()
         
-        if st.button("🔄 Cerrar Posición", use_container_width=True):
+        if st.button("🧹 Cerrar Posición", use_container_width=True):
             bot.close_all_positions()
             st.rerun()
             
@@ -612,18 +628,17 @@ def main():
             st.rerun()
         
         st.markdown("---")
-        st.header("⚙️ Configuración HFT")
+        st.header("💰 Configuración HFT")
         st.info(f"**Tamaño posición:** {bot.position_size*100}%")
-        st.info(f"**Take Profit:** {bot.take_profit_pct*100}%")
-        st.info(f"**Stop Loss:** {bot.stop_loss_pct*100}%")
+        st.info(f"**Target ganancia:** {bot.min_profit_target*100}%")
+        st.info(f"**Stop loss:** {bot.max_loss_stop*100}%")
         st.info(f"**Apalancamiento:** {bot.leverage}x")
-        st.info(f"**EMAs:** {bot.ema_fast_period}/{bot.ema_slow_period}")
-        st.info(f"**Volumen:** {bot.volume_multiplier}x")
+        st.info(f"**Operaciones máx:** {bot.max_positions}")
         
         if bot.is_running:
-            st.success("✅ HFT EJECUTÁNDOSE - ESTRATEGIA MOMENTUM")
+            st.success("✅ HFT EJECUTÁNDOSE - ESTRATEGIA AGRESIVA")
         else:
-            st.warning("🛑 HFT DETENIDO")
+            st.warning("⏸️ HFT DETENIDO")
             
         if bot.tick_data:
             latest_tick = list(bot.tick_data)[-1]
@@ -666,26 +681,26 @@ def main():
     with col5:
         position_status = f"{stats['position_side'].upper()}" if stats['position_side'] else "SIN POSICIÓN"
         st.metric(
-            label="📊 Posición Actual",
+            label="🔓 Posición Actual",
             value=position_status
         )
     
     with col6:
         st.metric(
-            label="⚖️ Tamaño Pos",
+            label="📦 Tamaño Pos",
             value=f"{stats['position_size']:.6f}"
         )
     
     with col7:
         st.metric(
-            label="💰 Equity Total",
+            label="💹 Equity Total",
             value=f"${stats['total_equity']:.2f}"
         )
     
     with col8:
         leverage_info = f"{stats['leverage']}x" if stats['position_side'] else "---"
         st.metric(
-            label="🎯 Apalancamiento",
+            label="⚡ Apalancamiento",
             value=leverage_info
         )
     
@@ -726,7 +741,7 @@ def main():
                     )
                 
                 fig.update_layout(
-                    title=f"Precio Futuros {bot.symbol} - ESTRATEGIA MOMENTUM HFT",
+                    title=f"Precio Futuros {bot.symbol} - HFT",
                     xaxis_title="Tiempo",
                     yaxis_title="Precio (USD)",
                     template="plotly_dark",
