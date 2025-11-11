@@ -1,101 +1,102 @@
+import streamlit as st
 import pandas as pd
 import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from datetime import datetime, timedelta
+import requests
 import time
-from binance.client import Client
-from binance.enums import *
-import logging
-from datetime import datetime
-import talib
+import hmac
+import hashlib
+import json
 
-# Configuración
-API_KEY = 'tu_api_key'
-API_SECRET = 'tu_api_secret'
-SYMBOL = 'BTCUSDT'
-QUANTITY = 0.0005
-LEVERAGE = 3
+# Configuración de la página
+st.set_page_config(
+    page_title="Bot Trading MEXC - Estrategia Momentum HFT",
+    page_icon="🚀",
+    layout="wide"
+)
 
-# Inicializar cliente Binance
-client = Client(API_KEY, API_SECRET)
-
-class HighFrequencyBot:
-    def __init__(self):
-        self.client = client
-        self.symbol = SYMBOL
-        self.quantity = QUANTITY
-        self.leverage = LEVERAGE
-        self.position = None
-        self.entry_price = 0
-        self.performance = []
+# Cliente MEXC
+class MexcClient:
+    def __init__(self, api_key=None, api_secret=None):
+        self.base_url = "https://api.mexc.com"
+        self.api_key = api_key
+        self.api_secret = api_secret
         
-        # *** SOLO MODIFICACIÓN: NUEVOS PARÁMETROS ESTRATEGIA ***
-        self.ema_fast = 8
-        self.ema_slow = 21
-        self.volume_multiplier = 2.0
-        self.stop_loss_pct = 0.08
-        self.take_profit_pct = 0.12
-        # *** FIN MODIFICACIÓN ***
-        
-        logging.basicConfig(level=logging.INFO)
-        self.logger = logging.getLogger(__name__)
-
-    def setup_leverage(self):
-        """Configurar leverage"""
+    def get_klines(self, symbol='BTCUSDT', interval='1m', limit=100):
+        """Obtener datos de velas de MEXC"""
         try:
-            self.client.futures_change_leverage(
-                symbol=self.symbol, 
-                leverage=self.leverage
-            )
-            self.logger.info(f"Leverage configurado a {self.leverage}x")
-        except Exception as e:
-            self.logger.error(f"Error configurando leverage: {e}")
-
-    def get_historical_data(self, interval='1m', limit=50):
-        """Obtener datos históricos para análisis técnico"""
-        try:
-            klines = self.client.futures_klines(
-                symbol=self.symbol,
-                interval=interval,
-                limit=limit
-            )
+            url = f"{self.base_url}/api/v3/klines"
+            params = {
+                'symbol': symbol,
+                'interval': interval,
+                'limit': limit
+            }
             
-            df = pd.DataFrame(klines, columns=[
+            response = requests.get(url, params=params)
+            data = response.json()
+            
+            # Convertir a DataFrame
+            df = pd.DataFrame(data, columns=[
                 'timestamp', 'open', 'high', 'low', 'close', 'volume',
                 'close_time', 'quote_asset_volume', 'trades',
                 'taker_buy_base', 'taker_buy_quote', 'ignore'
             ])
             
+            # Convertir tipos
             for col in ['open', 'high', 'low', 'close', 'volume']:
                 df[col] = pd.to_numeric(df[col])
                 
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            
             return df
+            
         except Exception as e:
-            self.logger.error(f"Error obteniendo datos históricos: {e}")
+            st.error(f"Error obteniendo datos de MEXC: {e}")
             return None
 
-    # *** SOLO MODIFICACIÓN: NUEVA FUNCIÓN DE INDICADORES ***
+# Estrategia Momentum HFT para MEXC
+class MexcMomentumHFT:
+    def __init__(self):
+        # Parámetros de la estrategia
+        self.ema_fast = 8
+        self.ema_slow = 21
+        self.volume_multiplier = 2.0
+        self.stop_loss_pct = 0.08
+        self.take_profit_pct = 0.12
+        self.leverage = 3
+        
+    def calculate_ema(self, prices, period):
+        """Calcular EMA manualmente"""
+        if len(prices) < period:
+            return [None] * len(prices)
+        ema = [prices[0]]
+        alpha = 2 / (period + 1)
+        for price in prices[1:]:
+            ema.append(alpha * price + (1 - alpha) * ema[-1])
+        return ema
+    
     def calculate_indicators(self, df):
-        """Calcular indicadores para estrategia momentum"""
-        try:
-            # EMAs para momentum
-            df['ema_fast'] = talib.EMA(df['close'], timeperiod=self.ema_fast)
-            df['ema_slow'] = talib.EMA(df['close'], timeperiod=self.ema_slow)
-            
-            # Volumen promedio
-            df['volume_avg'] = talib.SMA(df['volume'], timeperiod=20)
-            df['volume_ratio'] = df['volume'] / df['volume_avg']
-            
-            # VWAP
-            typical_price = (df['high'] + df['low'] + df['close']) / 3
-            df['vwap'] = (typical_price * df['volume']).cumsum() / df['volume'].cumsum()
-            
-            return df
-        except Exception as e:
-            self.logger.error(f"Error calculando indicadores: {e}")
-            return df
-
-    # *** SOLO MODIFICACIÓN: NUEVAS SEÑALES DE TRADING ***
+        """Calcular indicadores técnicos"""
+        df = df.copy()
+        
+        # EMAs
+        df['ema_fast'] = self.calculate_ema(df['close'].tolist(), self.ema_fast)
+        df['ema_slow'] = self.calculate_ema(df['close'].tolist(), self.ema_slow)
+        
+        # Volumen
+        df['volume_avg'] = df['volume'].rolling(window=20).mean()
+        df['volume_ratio'] = df['volume'] / df['volume_avg']
+        
+        # VWAP
+        typical_price = (df['high'] + df['low'] + df['close']) / 3
+        df['vwap'] = (typical_price * df['volume']).cumsum() / df['volume'].cumsum()
+        
+        return df
+    
     def should_enter_long(self, df):
-        """Señal de entrada LONG - Momentum con volumen"""
+        """Señal de entrada LONG"""
         if len(df) < 30:
             return False
             
@@ -106,16 +107,16 @@ class HighFrequencyBot:
         ema_cross_up = (current['ema_fast'] > current['ema_slow'] and 
                        previous['ema_fast'] <= previous['ema_slow'])
         
-        # Confirmación volumen 2x promedio
+        # Confirmación volumen
         volume_confirm = current['volume_ratio'] >= self.volume_multiplier
         
-        # Precio sobre VWAP (tendencia alcista)
+        # Precio sobre VWAP
         price_above_vwap = current['close'] > current['vwap']
         
         return all([ema_cross_up, volume_confirm, price_above_vwap])
-
+    
     def should_enter_short(self, df):
-        """Señal de entrada SHORT - Momentum con volumen"""
+        """Señal de entrada SHORT"""
         if len(df) < 30:
             return False
             
@@ -126,220 +127,227 @@ class HighFrequencyBot:
         ema_cross_down = (current['ema_fast'] < current['ema_slow'] and 
                          previous['ema_fast'] >= previous['ema_slow'])
         
-        # Confirmación volumen 2x promedio
+        # Confirmación volumen
         volume_confirm = current['volume_ratio'] >= self.volume_multiplier
         
-        # Precio bajo VWAP (tendencia bajista)
+        # Precio bajo VWAP
         price_below_vwap = current['close'] < current['vwap']
         
         return all([ema_cross_down, volume_confirm, price_below_vwap])
-
-    def get_current_price(self):
-        """Obtener precio actual"""
-        try:
-            ticker = self.client.futures_symbol_ticker(symbol=self.symbol)
-            return float(ticker['price'])
-        except Exception as e:
-            self.logger.error(f"Error obteniendo precio: {e}")
-            return None
-
-    def enter_long(self):
-        """Abrir posición long"""
-        try:
-            order = self.client.futures_create_order(
-                symbol=self.symbol,
-                side=SIDE_BUY,
-                type=ORDER_TYPE_MARKET,
-                quantity=self.quantity
-            )
-            
-            self.position = 'long'
-            self.entry_price = self.get_current_price()
-            self.logger.info(f"LONG abierta - Precio: {self.entry_price}, Cantidad: {self.quantity}")
-            return True
-        except Exception as e:
-            self.logger.error(f"Error abriendo LONG: {e}")
-            return False
-
-    def enter_short(self):
-        """Abrir posición short"""
-        try:
-            order = self.client.futures_create_order(
-                symbol=self.symbol,
-                side=SIDE_SELL,
-                type=ORDER_TYPE_MARKET,
-                quantity=self.quantity
-            )
-            
-            self.position = 'short'
-            self.entry_price = self.get_current_price()
-            self.logger.info(f"SHORT abierta - Precio: {self.entry_price}, Cantidad: {self.quantity}")
-            return True
-        except Exception as e:
-            self.logger.error(f"Error abriendo SHORT: {e}")
-            return False
-
-    # *** SOLO MODIFICACIÓN: NUEVAS CONDICIONES DE SALIDA ***
-    def should_exit_long(self, current_price):
-        """Verificar condiciones de salida para LONG"""
-        if not self.position == 'long':
-            return False
-            
-        # Take profit 0.12%
-        if current_price >= self.entry_price * (1 + self.take_profit_pct / 100):
-            return 'take_profit'
+    
+    def run_backtest(self, df):
+        """Ejecutar backtest de la estrategia"""
+        signals = []
+        position = None
+        entry_price = 0
         
-        # Stop loss 0.08%
-        if current_price <= self.entry_price * (1 - self.stop_loss_pct / 100):
-            return 'stop_loss'
-            
-        return False
-
-    def should_exit_short(self, current_price):
-        """Verificar condiciones de salida para SHORT"""
-        if not self.position == 'short':
-            return False
-            
-        # Take profit 0.12%
-        if current_price <= self.entry_price * (1 - self.take_profit_pct / 100):
-            return 'take_profit'
+        df = self.calculate_indicators(df)
         
-        # Stop loss 0.08%
-        if current_price >= self.entry_price * (1 + self.stop_loss_pct / 100):
-            return 'stop_loss'
+        for i in range(30, len(df)):
+            current = df.iloc[i]
             
-        return False
-
-    def close_position(self, reason="manual"):
-        """Cerrar posición actual"""
-        try:
-            if not self.position:
-                return True
-                
-            side = SIDE_SELL if self.position == 'long' else SIDE_BUY
+            # Verificar salidas
+            if position == 'long':
+                if current['close'] >= entry_price * (1 + self.take_profit_pct / 100):
+                    signals.append({
+                        'timestamp': current['timestamp'],
+                        'action': 'close_long',
+                        'price': current['close'],
+                        'type': 'take_profit'
+                    })
+                    position = None
+                elif current['close'] <= entry_price * (1 - self.stop_loss_pct / 100):
+                    signals.append({
+                        'timestamp': current['timestamp'],
+                        'action': 'close_long',
+                        'price': current['close'],
+                        'type': 'stop_loss'
+                    })
+                    position = None
             
-            order = self.client.futures_create_order(
-                symbol=self.symbol,
-                side=side,
-                type=ORDER_TYPE_MARKET,
-                quantity=self.quantity
-            )
+            elif position == 'short':
+                if current['close'] <= entry_price * (1 - self.take_profit_pct / 100):
+                    signals.append({
+                        'timestamp': current['timestamp'],
+                        'action': 'close_short',
+                        'price': current['close'],
+                        'type': 'take_profit'
+                    })
+                    position = None
+                elif current['close'] >= entry_price * (1 + self.stop_loss_pct / 100):
+                    signals.append({
+                        'timestamp': current['timestamp'],
+                        'action': 'close_short',
+                        'price': current['close'],
+                        'type': 'stop_loss'
+                    })
+                    position = None
             
-            exit_price = self.get_current_price()
-            pnl = ((exit_price - self.entry_price) / self.entry_price * 100 * self.leverage 
-                  if self.position == 'long' else 
-                  (self.entry_price - exit_price) / self.entry_price * 100 * self.leverage)
-            
-            self.performance.append({
-                'entry': self.entry_price,
-                'exit': exit_price,
-                'side': self.position,
-                'pnl': pnl,
-                'reason': reason,
-                'timestamp': datetime.now()
-            })
-            
-            self.logger.info(f"Posición {self.position} cerrada - Razón: {reason}, PnL: {pnl:.4f}%")
-            
-            self.position = None
-            self.entry_price = 0
-            return True
-        except Exception as e:
-            self.logger.error(f"Error cerrando posición: {e}")
-            return False
-
-    def check_exit_conditions(self):
-        """Verificar condiciones de salida para posición actual"""
-        current_price = self.get_current_price()
-        if not current_price:
-            return
-            
-        if self.position == 'long':
-            exit_signal = self.should_exit_long(current_price)
-        elif self.position == 'short':
-            exit_signal = self.should_exit_short(current_price)
-        else:
-            return
-            
-        if exit_signal:
-            self.close_position(reason=exit_signal)
-
-    # *** SOLO MODIFICACIÓN: NUEVA LÓGICA PRINCIPAL ***
-    def run_strategy(self):
-        """Ejecutar la estrategia momentum mejorada"""
-        try:
-            # Obtener datos
-            df = self.get_historical_data()
-            if df is None or len(df) < 30:
-                self.logger.warning("Datos insuficientes para análisis")
-                return
-                
-            # Calcular indicadores
-            df = self.calculate_indicators(df)
-            
-            # Verificar salidas primero
-            self.check_exit_conditions()
-            
-            # Si no hay posición, verificar entradas
-            if not self.position:
-                if self.should_enter_long(df):
-                    self.enter_long()
-                elif self.should_enter_short(df):
-                    self.enter_short()
-                    
-        except Exception as e:
-            self.logger.error(f"Error en ejecución de estrategia: {e}")
-
-    def get_performance_stats(self):
-        """Obtener estadísticas de performance"""
-        if not self.performance:
-            return "No hay operaciones aún"
-            
-        pnls = [trade['pnl'] for trade in self.performance]
-        wins = [pnl for pnl in pnls if pnl > 0]
+            # Verificar entradas
+            if not position:
+                current_data = df.iloc[:i+1]
+                if self.should_enter_long(current_data):
+                    position = 'long'
+                    entry_price = current['close']
+                    signals.append({
+                        'timestamp': current['timestamp'],
+                        'action': 'enter_long',
+                        'price': current['close']
+                    })
+                elif self.should_enter_short(current_data):
+                    position = 'short'
+                    entry_price = current['close']
+                    signals.append({
+                        'timestamp': current['timestamp'],
+                        'action': 'enter_short',
+                        'price': current['close']
+                    })
         
-        stats = {
-            'total_trades': len(self.performance),
-            'win_rate': len(wins) / len(pnls) * 100,
-            'avg_win': np.mean(wins) if wins else 0,
-            'avg_loss': np.mean([pnl for pnl in pnls if pnl <= 0]) if len(pnls) > len(wins) else 0,
-            'total_pnl': sum(pnls)
-        }
-        
-        return stats
+        return signals
 
 def main():
-    bot = HighFrequencyBot()
-    bot.setup_leverage()
+    st.title("🚀 Bot Trading MEXC - Estrategia Momentum HFT")
     
-    print("🤖 Bot de Trading Iniciado")
-    print("🎯 Estrategia: MOMENTUM CON VOLUMEN")
-    print(f"⚡ EMA{bot.ema_fast}/{bot.ema_slow} | Vol {bot.volume_multiplier}x")
-    print(f"📊 SL: {bot.stop_loss_pct}% | TP: {bot.take_profit_pct}%")
-    print("=" * 50)
+    # Sidebar
+    st.sidebar.header("⚙️ Configuración MEXC")
     
-    while True:
-        try:
-            bot.run_strategy()
+    api_key = st.sidebar.text_input("API Key MEXC", type="password")
+    api_secret = st.sidebar.text_input("API Secret MEXC", type="password")
+    
+    st.sidebar.header("🎯 Parámetros Estrategia")
+    
+    ema_fast = st.sidebar.slider("EMA Rápida", 5, 15, 8)
+    ema_slow = st.sidebar.slider("EMA Lenta", 15, 30, 21)
+    volume_multiplier = st.sidebar.slider("Múltiplo Volumen", 1.5, 3.0, 2.0)
+    stop_loss = st.sidebar.slider("Stop Loss (%)", 0.05, 0.2, 0.08)
+    take_profit = st.sidebar.slider("Take Profit (%)", 0.08, 0.25, 0.12)
+    
+    # Inicializar cliente MEXC
+    client = MexcClient(api_key, api_secret)
+    strategy = MexcMomentumHFT()
+    
+    # Actualizar parámetros
+    strategy.ema_fast = ema_fast
+    strategy.ema_slow = ema_slow
+    strategy.volume_multiplier = volume_multiplier
+    strategy.stop_loss_pct = stop_loss
+    strategy.take_profit_pct = take_profit
+    
+    # Botón para ejecutar
+    if st.sidebar.button("📊 Ejecutar Estrategia en MEXC"):
+        with st.spinner("Obteniendo datos de MEXC..."):
+            # Obtener datos reales de MEXC
+            df = client.get_klines(symbol='BTCUSDT', interval='1m', limit=100)
             
-            # Mostrar stats cada 10 ciclos
-            if len(bot.performance) > 0 and len(bot.performance) % 10 == 0:
-                stats = bot.get_performance_stats()
-                if isinstance(stats, dict):
-                    print(f"\n📈 Estadísticas: {stats['total_trades']} trades")
-                    print(f"   Win Rate: {stats['win_rate']:.1f}%")
-                    print(f"   PnL Total: {stats['total_pnl']:.2f}%")
-            
-            time.sleep(10)  # Verificar cada 10 segundos
-            
-        except KeyboardInterrupt:
-            print("\n🛑 Bot detenido manualmente")
-            if bot.position:
-                bot.close_position("shutdown")
-            break
-        except Exception as e:
-            print(f"Error en loop principal: {e}")
-            time.sleep(30)
+            if df is not None:
+                # Ejecutar estrategia
+                signals = strategy.run_backtest(df)
+                
+                # Mostrar resultados
+                col1, col2, col3, col4 = st.columns(4)
+                
+                total_trades = len([s for s in signals if 'enter' in s['action']])
+                winning_trades = len([s for s in signals if 'take_profit' in str(s.get('type', ''))])
+                win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+                
+                with col1:
+                    st.metric("💰 Operaciones Totales", total_trades)
+                with col2:
+                    st.metric("✅ Operaciones Ganadoras", winning_trades)
+                with col3:
+                    st.metric("🎯 Tasa de Acierto", f"{win_rate:.1f}%")
+                with col4:
+                    st.metric("⚡ Leverage", f"{strategy.leverage}x")
+                
+                # Gráfico de precios y señales
+                st.subheader("📈 Precio BTC/USDT y Señales de Trading")
+                
+                df_with_indicators = strategy.calculate_indicators(df)
+                
+                fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                                  vertical_spacing=0.05,
+                                  subplot_titles=('Precio y EMAs', 'Volumen'),
+                                  row_heights=[0.7, 0.3])
+                
+                # Precio
+                fig.add_trace(go.Scatter(x=df['timestamp'], y=df['close'],
+                                       name='Precio BTC', line=dict(color='blue')), row=1, col=1)
+                
+                # EMAs
+                fig.add_trace(go.Scatter(x=df['timestamp'], y=df_with_indicators['ema_fast'],
+                                       name=f'EMA {ema_fast}', line=dict(color='orange')), row=1, col=1)
+                fig.add_trace(go.Scatter(x=df['timestamp'], y=df_with_indicators['ema_slow'],
+                                       name=f'EMA {ema_slow}', line=dict(color='red')), row=1, col=1)
+                
+                # Señales
+                buy_signals = [s for s in signals if s['action'] == 'enter_long']
+                sell_signals = [s for s in signals if s['action'] == 'enter_short']
+                
+                if buy_signals:
+                    fig.add_trace(go.Scatter(
+                        x=[s['timestamp'] for s in buy_signals],
+                        y=[s['price'] for s in buy_signals],
+                        mode='markers', name='LONG',
+                        marker=dict(color='green', size=10, symbol='triangle-up')
+                    ), row=1, col=1)
+                
+                if sell_signals:
+                    fig.add_trace(go.Scatter(
+                        x=[s['timestamp'] for s in sell_signals],
+                        y=[s['price'] for s in sell_signals],
+                        mode='markers', name='SHORT',
+                        marker=dict(color='red', size=10, symbol='triangle-down')
+                    ), row=1, col=1)
+                
+                # Volumen
+                fig.add_trace(go.Bar(x=df['timestamp'], y=df['volume'],
+                                   name='Volumen', marker_color='lightblue'), row=2, col=1)
+                
+                fig.update_layout(height=600, showlegend=True)
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Mostrar últimas señales
+                st.subheader("📋 Historial de Señales")
+                if signals:
+                    signals_df = pd.DataFrame(signals)
+                    st.dataframe(signals_df)
+                else:
+                    st.info("No se generaron señales en este período")
+                
+                # Estadísticas de la estrategia
+                st.subheader("📊 Métricas de Performance")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.info(f"""
+                    **🎯 Estrategia Momentum HFT**
+                    - EMAs: {ema_fast}/{ema_slow}
+                    - Volumen mínimo: {volume_multiplier}x
+                    - Risk/Reward: 1:{take_profit/stop_loss:.1f}
+                    """)
+                
+                with col2:
+                    st.info(f"""
+                    **🛡️ Gestión de Riesgo**
+                    - Stop Loss: {stop_loss}%
+                    - Take Profit: {take_profit}%
+                    - Leverage: {strategy.leverage}x
+                    - Operaciones: {total_trades}
+                    """)
+    
+    # Información de la estrategia
+    st.sidebar.header("ℹ️ Estrategia Momentum HFT")
+    st.sidebar.write("""
+    **Señales de Entrada:**
+    - EMA rápida cruza EMA lenta
+    - Volumen 2x promedio mínimo
+    - Confirmación VWAP
+    
+    **Timeframe:** 1-minuto
+    **Hold Time:** 2-45 segundos
+    **Mercado:** MEXC Futures
+    """)
 
 if __name__ == "__main__":
     main()
