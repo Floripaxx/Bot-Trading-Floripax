@@ -876,4 +876,46 @@ def main():
                     'action': pos['action'],
                     'side': pos.get('side', ''),
                     'leverage': pos.get('leverage', ''),
-                    'price': f"${pos['price
+                    'price': f"${pos['price']:.2f}",
+                    'quantity': f"{pos['quantity']:.6f}",
+                    'cash_balance': f"${pos['cash_balance']:.2f}",
+                    'total_equity': f"${pos['total_equity']:.2f}",
+                    'profit_loss': f"${pos.get('profit_loss', 0):.4f}"
+                }
+                display_data.append(row)
+            
+            df = pd.DataFrame(display_data)
+            st.dataframe(df, use_container_width=True, height=400)
+        else:
+            st.info("No hay operaciones turbo registradas aún.")
+    
+    with tab3:
+        log_container = st.container(height=400)
+        with log_container:
+            for log_entry in reversed(bot.log_messages[-30:]):
+                if "ERROR" in log_entry or "CRITICAL" in log_entry:
+                    st.error(log_entry)
+                elif "TRADE" in log_entry:
+                    if "ABRIR" in log_entry:
+                        st.success(log_entry)
+                    elif "CERRAR" in log_entry:
+                        if "🔴" in log_entry:
+                            st.error(log_entry)
+                        else:
+                            st.success(log_entry)
+                    else:
+                        st.info(log_entry)
+                elif "SEÑAL" in log_entry or "PROFIT" in log_entry or "LOSS" in log_entry:
+                    st.warning(log_entry)
+                elif "SYSTEM" in log_entry:
+                    st.info(log_entry)
+                else:
+                    st.info(log_entry)
+    
+    # Auto-refresh más rápido para HFT
+    if bot.is_running:
+        time.sleep(2)
+        st.rerun()
+
+if __name__ == "__main__":
+    main()
