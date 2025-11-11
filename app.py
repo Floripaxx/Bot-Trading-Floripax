@@ -14,7 +14,7 @@ import os
 
 # Configurar la página de Streamlit
 st.set_page_config(
-    page_title="🤖 Bot HFT Futuros MEXC - ESTRATEGIA INVERSA",
+    page_title="🤖 Bot HFT Futuros MEXC - ESTRATEGIA NUCLEAR",
     page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -30,34 +30,52 @@ class MexcFuturesTradingBot:
         # Cargar estado desde archivo o inicializar
         self.load_state()
         
-        # CONFIGURACIÓN HFT FUTUROS - ESTRATEGIA INVERSA
+        # CONFIGURACIÓN HFT FUTUROS - ESTRATEGIA NUCLEAR
         self.leverage = 3  # Apalancamiento conservador
-        self.position_size = 0.08  # 8% del capital por operación (REDUCIDO)
-        self.max_positions = 1     # 1 operación a la vez (MAXIMA SEGURIDAD)
-        self.momentum_threshold = 0.0012  # Umbral más sensible
+        self.position_size = 0.08  # 8% del capital por operación
+        self.max_positions = 1     # 1 operación a la vez
+        self.momentum_threshold = 0.0012
         self.mean_reversion_threshold = 0.001
         self.volatility_multiplier = 1.8
         
-        # TARGETS MÁS CONSERVADORES - ESTRATEGIA INVERSA
-        self.min_profit_target = 0.0025  # 0.25% target (INVERTIDO)
-        self.max_loss_stop = 0.0015     # 0.15% stop loss (ESTRICTO)
+        # TARGETS OPTIMIZADOS - ESTRATEGIA NUCLEAR
+        self.min_profit_target = 0.0025  # 0.25% target
+        self.max_loss_stop = 0.0015     # 0.15% stop loss
         
         self.trading_thread = None
+        self.last_save_time = time.time()
+        
+    def create_backup_state(self):
+        """Crear estado de respaldo seguro"""
+        self.bot_data = {
+            'cash_balance': 255.0,
+            'position': 0,
+            'position_side': '',
+            'entry_price': 0,
+            'positions_history': [],
+            'open_positions': 0,
+            'log_messages': ["🔄 SISTEMA REINICIADO - Estado de respaldo activado"],
+            'tick_data': deque(maxlen=100),
+            'is_running': False,
+            'total_profit': 0
+        }
+        self.save_state()
         
     def save_state(self):
-        """Guardar estado en archivo JSON"""
+        """Guardar estado con protección contra corrupción"""
         try:
             state = {
                 'cash_balance': self.cash_balance,
                 'position': self.position,
-                'position_side': self.position_side,  # 'long' o 'short'
+                'position_side': self.position_side,
                 'entry_price': self.entry_price,
                 'positions_history': [],
                 'open_positions': self.open_positions,
                 'log_messages': self.log_messages,
                 'tick_data': [],
                 'is_running': self.is_running,
-                'total_profit': self.total_profit
+                'total_profit': self.total_profit,
+                'last_update': datetime.now().isoformat()
             }
             
             # Convertir positions_history
@@ -71,21 +89,45 @@ class MexcFuturesTradingBot:
                 tick_copy = tick.copy()
                 tick_copy['timestamp'] = tick['timestamp'].isoformat() if isinstance(tick['timestamp'], datetime) else str(tick['timestamp'])
                 state['tick_data'].append(tick_copy)
-                    
-            with open('futures_bot_state.json', 'w') as f:
+            
+            # Guardar en archivo temporal primero
+            temp_file = 'futures_bot_state_temp.json'
+            with open(temp_file, 'w') as f:
                 json.dump(state, f, default=str, indent=2)
+            
+            # Reemplazar archivo principal de forma atómica
+            os.replace(temp_file, 'futures_bot_state.json')
+            
+            # Guardar backup cada 5 minutos
+            current_time = time.time()
+            if current_time - self.last_save_time > 300:  # 5 minutos
+                backup_file = f'futures_bot_state_backup_{int(current_time)}.json'
+                with open(backup_file, 'w') as f:
+                    json.dump(state, f, default=str, indent=2)
+                self.last_save_time = current_time
+                
         except Exception as e:
-            print(f"Error guardando estado: {e}")
+            print(f"🚨 ERROR CRÍTICO guardando estado: {e}")
+            # Intentar guardar en archivo de emergencia
+            try:
+                with open('futures_bot_state_emergency.json', 'w') as f:
+                    json.dump({'error': str(e), 'timestamp': datetime.now().isoformat()}, f)
+            except:
+                pass
     
     def load_state(self):
-        """Cargar estado desde archivo JSON"""
+        """Cargar estado con recuperación de errores"""
         try:
             if os.path.exists('futures_bot_state.json'):
                 with open('futures_bot_state.json', 'r') as f:
                     state = json.load(f)
                 
+                # VALIDAR ESTRUCTURA CRÍTICA
+                if 'cash_balance' not in state:
+                    raise ValueError("Estado corrupto - falta cash_balance")
+                
                 # Convertir deque de tick_data
-                tick_data = deque(maxlen=100)  # Más datos para mejor análisis
+                tick_data = deque(maxlen=100)
                 for tick in state.get('tick_data', []):
                     tick_copy = tick.copy()
                     if 'timestamp' in tick:
@@ -99,6 +141,7 @@ class MexcFuturesTradingBot:
                     tick_data.append(tick_copy)
                 
                 # Convertir timestamps en positions_history
+
                 positions_history = []
                 for pos in state.get('positions_history', []):
                     pos_copy = pos.copy()
@@ -113,9 +156,9 @@ class MexcFuturesTradingBot:
                     positions_history.append(pos_copy)
                 
                 self.bot_data = {
-                    'cash_balance': state.get('cash_balance', 255.0),  # CAPITAL INICIAL $255
+                    'cash_balance': state.get('cash_balance', 255.0),
                     'position': state.get('position', 0),
-                    'position_side': state.get('position_side', ''),  # 'long' o 'short'
+                    'position_side': state.get('position_side', ''),
                     'entry_price': state.get('entry_price', 0),
                     'positions_history': positions_history,
                     'open_positions': state.get('open_positions', 0),
@@ -124,35 +167,26 @@ class MexcFuturesTradingBot:
                     'is_running': state.get('is_running', False),
                     'total_profit': state.get('total_profit', 0)
                 }
+                
+                self.log_message("✅ Estado cargado correctamente - ESTRATEGIA NUCLEAR ACTIVA", "SYSTEM")
+                
             else:
-                # Estado inicial FUTUROS
-                self.bot_data = {
-                    'cash_balance': 255.0,  # CAPITAL INICIAL $255
-                    'position': 0,
-                    'position_side': '',  # 'long' o 'short'
-                    'entry_price': 0,
-                    'positions_history': [],
-                    'open_positions': 0,
-                    'log_messages': [],
-                    'tick_data': deque(maxlen=100),  # Más datos
-                    'is_running': False,
-                    'total_profit': 0
-                }
+                self.create_backup_state()
+                
         except Exception as e:
-            print(f"Error cargando estado: {e}")
-            # Estado inicial por defecto FUTUROS
-            self.bot_data = {
-                'cash_balance': 255.0,  # CAPITAL INICIAL $255
-                'position': 0,
-                'position_side': '',  # 'long' o 'short'
-                'entry_price': 0,
-                'positions_history': [],
-                'open_positions': 0,
-                'log_messages': [],
-                'tick_data': deque(maxlen=100),
-                'is_running': False,
-                'total_profit': 0
-            }
+            print(f"🚨 ERROR cargando estado: {e}")
+            # Intentar cargar backup
+            try:
+                backup_files = [f for f in os.listdir('.') if f.startswith('futures_bot_state_backup_')]
+                if backup_files:
+                    latest_backup = max(backup_files)
+                    with open(latest_backup, 'r') as f:
+                        state = json.load(f)
+                    self.log_message(f"🔄 Recuperado desde backup: {latest_backup}", "SYSTEM")
+                else:
+                    self.create_backup_state()
+            except:
+                self.create_backup_state()
     
     @property
     def cash_balance(self):
@@ -234,7 +268,7 @@ class MexcFuturesTradingBot:
         timestamp = datetime.now().strftime("%H:%M:%S")
         log_entry = f"[{timestamp}] {level}: {message}"
         self.log_messages.append(log_entry)
-        if len(self.log_messages) > 100:  # Más logs
+        if len(self.log_messages) > 100:
             self.log_messages.pop(0)
         self.save_state()
 
@@ -244,13 +278,13 @@ class MexcFuturesTradingBot:
             url = f"https://api.mexc.com/api/v3/ticker/price"
             params = {'symbol': self.symbol}
             
-            response = requests.get(url, params=params, timeout=5)  # Timeout más corto
+            response = requests.get(url, params=params, timeout=5)
             
             if response.status_code == 200:
                 data = response.json()
                 if 'price' in data:
                     current_price = float(data['price'])
-                    spread = current_price * 0.00005  # Spread más ajustado para futuros
+                    spread = current_price * 0.00005
                     
                     return {
                         'timestamp': datetime.now(),
@@ -270,7 +304,7 @@ class MexcFuturesTradingBot:
     def get_backup_price(self) -> dict:
         """Precio de backup para futuros"""
         base_prices = {
-            'BTCUSDT': 106000,  # Precio actualizado
+            'BTCUSDT': 106000,
             'ETHUSDT': 3500,
             'ADAUSDT': 0.45,
             'DOTUSDT': 7.5,
@@ -278,9 +312,9 @@ class MexcFuturesTradingBot:
         }
         
         base_price = base_prices.get(self.symbol, 106000)
-        variation = np.random.uniform(-0.01, 0.01)  # Menor variación
+        variation = np.random.uniform(-0.01, 0.01)
         current_price = base_price * (1 + variation)
-        spread = current_price * 0.00005  # Spread ajustado
+        spread = current_price * 0.00005
         
         return {
             'timestamp': datetime.now(),
@@ -300,14 +334,16 @@ class MexcFuturesTradingBot:
         df = pd.DataFrame(prices, columns=['price'])
         
         # Indicadores ULTRA RÁPIDOS para HFT
+
         df['returns'] = df['price'].pct_change()
-        df['momentum'] = df['returns'].rolling(2).mean()  # Ventana MUY corta
-        df['sma_3'] = df['price'].rolling(3).mean()  # SMA más corta
+        df['momentum'] = df['returns'].rolling(2).mean()
+        df['sma_3'] = df['price'].rolling(3).mean()
         df['sma_8'] = df['price'].rolling(8).mean()
         df['price_deviation'] = (df['price'] - df['sma_3']) / df['sma_3']
         df['volatility'] = df['returns'].rolling(5).std() * self.volatility_multiplier
         
         # RSI ultra rápido
+
         delta = df['price'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=3).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=3).mean()
@@ -315,12 +351,14 @@ class MexcFuturesTradingBot:
         df['rsi'] = 100 - (100 / (1 + rs))
         
         # MACD ultra rápido
+
         exp8 = df['price'].ewm(span=3, adjust=False).mean()
         exp16 = df['price'].ewm(span=6, adjust=False).mean()
         df['macd'] = exp8 - exp16
         df['macd_signal'] = df['macd'].ewm(span=2, adjust=False).mean()
         
         # Bollinger Bands ajustadas
+
         df['bb_middle'] = df['price'].rolling(8).mean()
         df['bb_std'] = df['price'].rolling(8).std()
         df['bb_upper'] = df['bb_middle'] + (df['bb_std'] * 1.2)
@@ -344,7 +382,7 @@ class MexcFuturesTradingBot:
         }
 
     def trading_strategy(self, indicators: dict) -> str:
-        """ESTRATEGIA INVERSA MÁS AGRESIVA - Condiciones relajadas"""
+        """ESTRATEGIA NUCLEAR HFT - Condiciones optimizadas"""
         if not indicators:
             return 'hold'
         
@@ -358,27 +396,27 @@ class MexcFuturesTradingBot:
         bb_upper = indicators['bb_upper']
         bb_lower = indicators['bb_lower']
         
-        # ESTRATEGIA INVERSA - CONDICIONES MÁS RELAJADAS
+        # ESTRATEGIA NUCLEAR HFT - CONDICIONES OPTIMIZADAS
         
-        # SEÑAL DE VENTA (SHORT) - Condiciones más flexibles
+        # SEÑAL DE VENTA (SHORT) - Estrategia Nuclear
         short_conditions = [
-            momentum > 0.0008,           # REDUCIDO de 0.0012
-            rsi > 35,                    # REDUCIDO de 40  
+            momentum > 0.0008,
+            rsi > 35,  
             macd > macd_signal,         
-            current_price > bb_lower * 0.999,  # MÁS FLEXIBLE
-            volatility < 0.02            # AUMENTADO
+            current_price > bb_lower * 0.999,
+            volatility < 0.02
         ]
         
-        # SEÑAL DE COMPRA (LONG) - Condiciones más flexibles
+        # SEÑAL DE COMPRA (LONG) - Estrategia Nuclear
         long_conditions = [
-            momentum < -0.0008,          # REDUCIDO de -0.0012
-            rsi < 65,                    # AUMENTADO de 60
+            momentum < -0.0008,
+            rsi < 65,
             macd < macd_signal,         
-            current_price < bb_upper * 1.001,  # MÁS FLEXIBLE
+            current_price < bb_upper * 1.001,
             self.position == 0          
         ]
         
-        # GESTIÓN DE POSICIÓN ABIERTA - ESTRATEGIA INVERSA
+        # GESTIÓN DE POSICIÓN ABIERTA - ESTRATEGIA NUCLEAR
         if self.position > 0:
             if self.position_side == 'long':
                 current_profit_pct = (current_price - self.entry_price) / self.entry_price
@@ -387,28 +425,28 @@ class MexcFuturesTradingBot:
                 current_profit_pct = (self.entry_price - current_price) / self.entry_price
                 current_loss_pct = (current_price - self.entry_price) / self.entry_price
             
-            # TOMA DE GANANCIAS INVERSA - Más agresiva en ganancias
+            # TOMA DE GANANCIAS NUCLEAR
             if current_profit_pct >= self.min_profit_target:
-                self.log_message(f"🎯 TOMANDO GANANCIAS INVERSA: {current_profit_pct:.3%} (+)", "PROFIT")
+                self.log_message(f"🎯 GANANCIA NUCLEAR: {current_profit_pct:.3%} (+)", "PROFIT")
                 return 'close'
             
-            # STOP LOSS INVERSO - Más protector
+            # STOP LOSS NUCLEAR
             if current_loss_pct >= self.max_loss_stop:
-                self.log_message(f"🛑 STOP LOSS INVERSO: {current_loss_pct:.3%} (-)", "LOSS")
+                self.log_message(f"🛑 STOP LOSS NUCLEAR: {current_loss_pct:.3%} (-)", "LOSS")
                 return 'close'
         
-        # SEÑALES PRINCIPALES INVERSAS - REQUISITOS REDUCIDOS
-        if sum(short_conditions) >= 2 and self.position == 0:  # SOLO 2/5 condiciones (antes 3)
-            self.log_message(f"🔥 SEÑAL VENTA AGRESIVA: momentum={momentum:.4f}, RSI={rsi:.1f}", "SIGNAL")
+        # SEÑALES PRINCIPALES NUCLEAR
+        if sum(short_conditions) >= 2 and self.position == 0:
+            self.log_message(f"⚡ SEÑAL VENTA NUCLEAR: momentum={momentum:.4f}, RSI={rsi:.1f}", "SIGNAL")
             return 'sell'
-        elif sum(long_conditions) >= 2 and self.position == 0:  # SOLO 2/5 condiciones (antes 3)
-            self.log_message(f"🔥 SEÑAL COMPRA AGRESIVA: momentum={momentum:.4f}, RSI={rsi:.1f}", "SIGNAL")
+        elif sum(long_conditions) >= 2 and self.position == 0:
+            self.log_message(f"⚡ SEÑAL COMPRA NUCLEAR: momentum={momentum:.4f}, RSI={rsi:.1f}", "SIGNAL")
             return 'buy'
         
         return 'hold'
 
     def execute_trade(self, action: str, price: float):
-        """Ejecutar operación en FUTUROS - ESTRATEGIA INVERSA"""
+        """Ejecutar operación en FUTUROS - ESTRATEGIA NUCLEAR"""
         try:
             investment_amount = 0
             quantity = 0
@@ -426,14 +464,14 @@ class MexcFuturesTradingBot:
                     return
                 
                 # Actualizar balances
-                self.cash_balance -= (investment_amount / self.leverage)  # Margen utilizado
+                self.cash_balance -= (investment_amount / self.leverage)
                 self.position = quantity
                 self.entry_price = price
                 self.position_side = 'long' if action == 'buy' else 'short'
                 self.open_positions = 1
                 
                 side_emoji = "🟢" if action == 'buy' else "🔴"
-                trade_info = f"{side_emoji} ABRIR {self.position_side.upper()}: {quantity:.6f} {self.symbol} @ ${price:.2f} | Margen: ${investment_amount/self.leverage:.2f} | Leverage: {self.leverage}x"
+                trade_info = f"{side_emoji} NUCLEAR {self.position_side.upper()}: {quantity:.6f} {self.symbol} @ ${price:.2f} | Margen: ${investment_amount/self.leverage:.2f} | Leverage: {self.leverage}x"
                 self.log_message(trade_info, "TRADE")
                 
             elif action == 'close' and self.position > 0:
@@ -455,7 +493,7 @@ class MexcFuturesTradingBot:
                 self.total_profit += profit_loss
                 
                 profit_color = "🟢" if profit_loss > 0 else "🔴"
-                trade_info = f"{profit_color} CERRAR: {quantity_to_close:.6f} {self.symbol} @ ${price:.2f} | P/L: ${profit_loss:.4f} | Profit Total: ${self.total_profit:.2f}"
+                trade_info = f"{profit_color} CERRAR NUCLEAR: {quantity_to_close:.6f} {self.symbol} @ ${price:.2f} | P/L: ${profit_loss:.4f} | Profit Total: ${self.total_profit:.2f}"
                 self.log_message(trade_info, "TRADE")
             
             # Registrar posición
@@ -475,7 +513,7 @@ class MexcFuturesTradingBot:
             self.save_state()
             
         except Exception as e:
-            self.log_message(f"Error ejecutando trade futuros: {e}", "ERROR")
+            self.log_message(f"🚨 ERROR ejecutando trade: {e}", "ERROR")
 
     def close_all_positions(self):
         """Cerrar todas las posiciones abiertas"""
@@ -483,11 +521,11 @@ class MexcFuturesTradingBot:
             tick_data = self.get_futures_price()
             price = tick_data['bid'] if self.position_side == 'long' else tick_data['ask']
             self.execute_trade('close', price)
-            self.log_message("🧹 TODAS las posiciones futuros cerradas", "INFO")
+            self.log_message("🧹 TODAS las posiciones cerradas - MODO SEGURIDAD", "INFO")
 
     def reset_account(self):
         """Reiniciar cuenta a estado inicial"""
-        self.cash_balance = 255.0  # CAPITAL INICIAL $255
+        self.cash_balance = 255.0
         self.position = 0
         self.position_side = ''
         self.entry_price = 0
@@ -496,12 +534,15 @@ class MexcFuturesTradingBot:
         self.log_messages.clear()
         self.tick_data.clear()
         self.total_profit = 0
-        self.log_message("🔄 Cuenta futuros reiniciada a $255.00", "INFO")
+        self.log_message("🔄 Cuenta reiniciada a $255.00 - ESTRATEGIA NUCLEAR", "INFO")
         self.save_state()
 
     def trading_cycle(self):
-        """Ciclo principal de trading HFT"""
-        self.log_message("🚀 Iniciando HFT Futuros - ESTRATEGIA INVERSA AGRESIVA ACTIVADA")
+        """Ciclo principal de trading HFT con protección máxima"""
+        self.log_message("🚀 INICIANDO ESTRATEGIA NUCLEAR HFT - PROTECCIÓN ACTIVADA")
+        
+        consecutive_errors = 0
+        max_consecutive_errors = 5
         
         while self.is_running:
             try:
@@ -517,11 +558,21 @@ class MexcFuturesTradingBot:
                         price = tick_data['ask'] if signal == 'buy' else tick_data['bid']
                         self.execute_trade(signal, price)
                 
-                time.sleep(0.8)  # HFT: 800ms entre ciclos
+                consecutive_errors = 0  # Resetear contador de errores
+                time.sleep(0.8)
                 
             except Exception as e:
-                self.log_message(f"Error en ciclo HFT: {e}", "ERROR")
-                time.sleep(2)
+                consecutive_errors += 1
+                self.log_message(f"🚨 ERROR en ciclo #{consecutive_errors}: {e}", "ERROR")
+                
+                if consecutive_errors >= max_consecutive_errors:
+                    self.log_message("🛑 DEMASIADOS ERRORES - Cerrando todas las posiciones", "CRITICAL")
+                    self.close_all_positions()
+                    self.is_running = False
+                    break
+                
+                time.sleep(10)  # Esperar 10 segundos antes de reintentar
+                continue
 
     def start_trading(self):
         """Iniciar bot de trading HFT"""
@@ -529,12 +580,12 @@ class MexcFuturesTradingBot:
             self.is_running = True
             self.trading_thread = threading.Thread(target=self.trading_cycle, daemon=True)
             self.trading_thread.start()
-            self.log_message("✅ Bot HFT Futuros iniciado - ESTRATEGIA INVERSA AGRESIVA ACTIVADA")
+            self.log_message("✅ ESTRATEGIA NUCLEAR HFT ACTIVADA - SISTEMA ESTABLE", "SYSTEM")
 
     def stop_trading(self):
         """Detener bot de trading"""
         self.is_running = False
-        self.log_message("⏹️ Bot HFT Futuros detenido")
+        self.log_message("⏹️ ESTRATEGIA NUCLEAR DETENIDA", "SYSTEM")
 
     def get_performance_stats(self):
         """Obtener estadísticas de performance"""
@@ -554,7 +605,7 @@ class MexcFuturesTradingBot:
         else:
             total_equity = self.cash_balance
         
-        total_profit = total_equity - 255.0  # Desde capital inicial
+        total_profit = total_equity - 255.0
         
         stats = {
             'total_trades': len([p for p in self.positions_history if p['action'] in ['buy', 'sell']]),
@@ -583,8 +634,8 @@ class MexcFuturesTradingBot:
         return stats
 
 def main():
-    st.title("🤖 Bot HFT Futuros MEXC - ESTRATEGIA INVERSA AGRESIVA 🚀")
-    st.markdown("**CAPITAL INICIAL: $255.00 | APALANCAMIENTO: 3x | ESTRATEGIA AGRESIVA**")
+    st.title("🤖 Bot HFT Futuros MEXC - ESTRATEGIA NUCLEAR ⚡")
+    st.markdown("**CAPITAL INICIAL: $255.00 | APALANCAMIENTO: 3x | SISTEMA ANTICRASH**")
     st.markdown("---")
     
     # Inicializar el bot
@@ -595,7 +646,7 @@ def main():
     
     # Sidebar
     with st.sidebar:
-        st.header("⚙️ Configuración Futuros")
+        st.header("⚙️ Configuración Nuclear")
         
         api_key = st.text_input("API Key MEXC", type="password")
         secret_key = st.text_input("Secret Key MEXC", type="password")
@@ -606,16 +657,16 @@ def main():
         bot.symbol = symbol
         
         st.markdown("---")
-        st.header("🎯 Control HFT Futuros")
+        st.header("🎯 Control Nuclear")
         
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("🚀 Iniciar HFT", use_container_width=True, type="primary"):
+            if st.button("🚀 Activar Nuclear", use_container_width=True, type="primary"):
                 bot.start_trading()
                 st.rerun()
         
         with col2:
-            if st.button("⏹️ Detener HFT", use_container_width=True):
+            if st.button("⏹️ Desactivar Nuclear", use_container_width=True):
                 bot.stop_trading()
                 st.rerun()
         
@@ -628,7 +679,7 @@ def main():
             st.rerun()
         
         st.markdown("---")
-        st.header("💰 Configuración HFT")
+        st.header("💰 Configuración Nuclear")
         st.info(f"**Tamaño posición:** {bot.position_size*100}%")
         st.info(f"**Target ganancia:** {bot.min_profit_target*100}%")
         st.info(f"**Stop loss:** {bot.max_loss_stop*100}%")
@@ -636,9 +687,9 @@ def main():
         st.info(f"**Operaciones máx:** {bot.max_positions}")
         
         if bot.is_running:
-            st.success("✅ HFT EJECUTÁNDOSE - ESTRATEGIA AGRESIVA")
+            st.success("✅ NUCLEAR ACTIVO - SISTEMA ESTABLE")
         else:
-            st.warning("⏸️ HFT DETENIDO")
+            st.warning("⏸️ SISTEMA EN STANDBY")
             
         if bot.tick_data:
             latest_tick = list(bot.tick_data)[-1]
@@ -707,7 +758,7 @@ def main():
     st.markdown("---")
     
     # Gráficos y datos
-    tab1, tab2, tab3 = st.tabs(["📈 Precios Futuros", "📋 Operaciones Futuros", "📝 Logs HFT"])
+    tab1, tab2, tab3 = st.tabs(["📈 Precios Futuros", "📋 Operaciones Nucleares", "📝 Logs del Sistema"])
     
     with tab1:
         if bot.tick_data:
@@ -741,7 +792,7 @@ def main():
                     )
                 
                 fig.update_layout(
-                    title=f"Precio Futuros {bot.symbol} - HFT",
+                    title=f"Precio Futuros {bot.symbol} - ESTRATEGIA NUCLEAR",
                     xaxis_title="Tiempo",
                     yaxis_title="Precio (USD)",
                     template="plotly_dark",
@@ -775,13 +826,13 @@ def main():
             df = pd.DataFrame(display_data)
             st.dataframe(df, use_container_width=True, height=400)
         else:
-            st.info("No hay operaciones de futuros registradas aún.")
+            st.info("No hay operaciones nucleares registradas aún.")
     
     with tab3:
         log_container = st.container(height=400)
         with log_container:
-            for log_entry in reversed(bot.log_messages[-30:]):  # Más logs
-                if "ERROR" in log_entry:
+            for log_entry in reversed(bot.log_messages[-30:]):
+                if "ERROR" in log_entry or "CRITICAL" in log_entry:
                     st.error(log_entry)
                 elif "TRADE" in log_entry:
                     if "ABRIR" in log_entry:
@@ -795,6 +846,8 @@ def main():
                         st.info(log_entry)
                 elif "SEÑAL" in log_entry or "PROFIT" in log_entry or "LOSS" in log_entry:
                     st.warning(log_entry)
+                elif "SYSTEM" in log_entry:
+                    st.info(log_entry)
                 else:
                     st.info(log_entry)
     
