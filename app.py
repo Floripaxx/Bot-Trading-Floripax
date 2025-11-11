@@ -5,48 +5,31 @@ from collections import deque
 from datetime import datetime
 import pandas as pd
 import numpy as np
-import hmac
-import hashlib
 import requests
 import json
 import plotly.graph_objects as go
 import os
-import atexit
-import signal
-import sys
 
-# =============================================
-# SISTEMA DE PERSISTENCIA INDEPENDIENTE
-# =============================================
+# Configurar la página de Streamlit
+st.set_page_config(
+    page_title="🤖 Bot HFT Futuros MEXC - ESTRATEGIA ULTRA AGRESIVA",
+    page_icon="🤖",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
 class PersistentStateManager:
-    """Gestor de estado INDEPENDIENTE de Streamlit"""
+    """Gestor de estado INDEPENDIENTE de Streamlit - VERSIÓN SIMPLIFICADA"""
     
     def __init__(self, state_file='bot_persistent_state.json'):
         self.state_file = state_file
         self.lock = threading.Lock()
-        self._register_cleanup()
-    
-    def _register_cleanup(self):
-        """Registrar handlers para cierre limpio"""
-        atexit.register(self.cleanup)
-        signal.signal(signal.SIGINT, self.signal_handler)
-        signal.signal(signal.SIGTERM, self.signal_handler)
-    
-    def signal_handler(self, signum, frame):
-        """Manejar señales de sistema"""
-        self.cleanup()
-        sys.exit(0)
-    
-    def cleanup(self):
-        """Limpieza al cerrar"""
-        print("🛑 Cerrando bot persistentemente...")
     
     def save_state(self, state_data):
-        """Guardar estado de forma atómica y robusta"""
+        """Guardar estado de forma atómica"""
         with self.lock:
             try:
-                # Crear copia profunda
+                # Crear copia del estado
                 state_copy = self._deep_copy_state(state_data)
                 
                 # Guardar en temporal primero
@@ -56,28 +39,14 @@ class PersistentStateManager:
                 
                 # Mover atómicamente
                 os.replace(temp_file, self.state_file)
-                
-                # Backup cada 30 minutos
-                if int(time.time()) % 1800 < 2:  # Cada 30 minutos aprox
-                    backup_file = f"backups/{self.state_file}.backup.{int(time.time())}"
-                    os.makedirs('backups', exist_ok=True)
-                    with open(backup_file, 'w') as f:
-                        json.dump(state_copy, f, default=self._json_serializer, indent=2)
-                
                 return True
+                
             except Exception as e:
-                print(f"🚨 ERROR guardando estado persistente: {e}")
-                # Intentar guardado de emergencia
-                try:
-                    emergency_file = f"{self.state_file}.emergency"
-                    with open(emergency_file, 'w') as f:
-                        json.dump({'timestamp': datetime.now().isoformat(), 'error': str(e)}, f)
-                except:
-                    pass
+                print(f"🚨 ERROR guardando estado: {e}")
                 return False
     
     def load_state(self):
-        """Cargar estado con recuperación múltiple"""
+        """Cargar estado con recuperación"""
         with self.lock:
             try:
                 # Intentar archivo principal
@@ -86,37 +55,16 @@ class PersistentStateManager:
                         state = json.load(f)
                     return self._deserialize_state(state)
                 
-                # Intentar archivo temporal
-                temp_file = f"{self.state_file}.tmp"
-                if os.path.exists(temp_file):
-                    with open(temp_file, 'r') as f:
-                        state = json.load(f)
-                    os.replace(temp_file, self.state_file)  # Recuperar
-                    return self._deserialize_state(state)
-                
-                # Intentar backups
-                backup_files = [f for f in os.listdir('backups') if f.startswith(self.state_file)] if os.path.exists('backups') else []
-                if backup_files:
-                    latest_backup = max(backup_files)
-                    with open(f"backups/{latest_backup}", 'r') as f:
-                        state = json.load(f)
-                    return self._deserialize_state(state)
-                
                 # Estado inicial
                 return self._get_initial_state()
                 
             except Exception as e:
-                print(f"🚨 ERROR cargando estado persistente: {e}")
+                print(f"🚨 ERROR cargando estado: {e}")
                 return self._get_initial_state()
     
     def _deep_copy_state(self, state):
-        """Copia profunda del estado"""
-        if isinstance(state, dict):
-            return {k: self._deep_copy_state(v) for k, v in state.items()}
-        elif isinstance(state, list):
-            return [self._deep_copy_state(item) for item in state]
-        else:
-            return state
+        """Copia simple del estado"""
+        return json.loads(json.dumps(state, default=self._json_serializer))
     
     def _json_serializer(self, obj):
         """Serializar objetos para JSON"""
@@ -162,13 +110,8 @@ class PersistentStateManager:
             'tick_data': [],
             'is_running': False,
             'total_profit': 0,
-            'start_time': datetime.now().isoformat(),
-            'session_id': str(int(time.time()))
+            'start_time': datetime.now().isoformat()
         }
-
-# =============================================
-# BOT CON PERSISTENCIA INDEPENDIENTE
-# =============================================
 
 class MexcFuturesTradingBot:
     def __init__(self, api_key: str, secret_key: str, symbol: str = 'BTCUSDT'):
@@ -177,11 +120,11 @@ class MexcFuturesTradingBot:
         self.symbol = symbol
         self.base_url = 'https://api.mexc.com'
         
-        # SISTEMA DE PERSISTENCIA INDEPENDIENTE
+        # SISTEMA DE PERSISTENCIA SIMPLIFICADO
         self.persistence = PersistentStateManager()
         self._state = self.persistence.load_state()
         
-        # Configuración del bot (igual que antes)
+        # Configuración del bot (MANTENER IGUAL)
         self.leverage = 3
         self.position_size = 0.12
         self.max_positions = 2
@@ -192,26 +135,28 @@ class MexcFuturesTradingBot:
         self.max_loss_stop = 0.0020
         
         self.trading_thread = None
-        self._auto_save_thread = None
         self._running = False
         
-        # Iniciar auto-guardado
-        self._start_auto_save()
+        # Inicializar tick_data
+        self._current_tick_data = deque(maxlen=100)
+        if self._state['tick_data']:
+            self._current_tick_data.extend(self._state['tick_data'])
     
-    def _start_auto_save(self):
-        """Hilo independiente para auto-guardado cada 30 segundos"""
-        def auto_save_loop():
-            while getattr(self, '_running', True):
-                try:
-                    self.persistence.save_state(self._state)
-                    time.sleep(30)  # Guardar cada 30 segundos
-                except:
-                    time.sleep(10)
-        
-        self._auto_save_thread = threading.Thread(target=auto_save_loop, daemon=True)
-        self._auto_save_thread.start()
+    def _auto_save(self):
+        """Guardado automático simple"""
+        try:
+            # Actualizar tick_data antes de guardar
+            self._state['tick_data'] = list(self._current_tick_data)
+            # Guardar en hilo separado
+            threading.Thread(
+                target=self.persistence.save_state, 
+                args=(self._state,),
+                daemon=True
+            ).start()
+        except:
+            pass
     
-    # PROPIEDADES CON PERSISTENCIA AUTOMÁTICA
+    # PROPIEDADES CON PERSISTENCIA (MANTENER IGUAL)
     @property
     def cash_balance(self):
         return self._state['cash_balance']
@@ -267,16 +212,7 @@ class MexcFuturesTradingBot:
     
     @property
     def tick_data(self):
-        # Convertir lista a deque para uso interno
-        if 'tick_data' not in self._state:
-            self._state['tick_data'] = []
         return deque(self._state['tick_data'], maxlen=100)
-    
-    @tick_data.setter
-    def tick_data(self, value):
-        # Convertir deque a lista para persistencia
-        self._state['tick_data'] = list(value)
-        self._auto_save()
     
     @property
     def is_running(self):
@@ -295,23 +231,7 @@ class MexcFuturesTradingBot:
     def total_profit(self, value):
         self._state['total_profit'] = value
         self._auto_save()
-    
-    def _auto_save(self):
-        """Guardado automático no bloqueante"""
-        try:
-            # Actualizar tick_data antes de guardar
-            if hasattr(self, '_current_tick_data'):
-                self._state['tick_data'] = list(self._current_tick_data)
-            
-            # Guardar en hilo separado para no bloquear
-            threading.Thread(
-                target=self.persistence.save_state, 
-                args=(self._state,),
-                daemon=True
-            ).start()
-        except:
-            pass
-    
+
     def log_message(self, message: str, level: str = "INFO"):
         """Agregar mensaje al log con persistencia"""
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -321,9 +241,7 @@ class MexcFuturesTradingBot:
             self.log_messages.pop(0)
         self._auto_save()
 
-    # MANTENER TODAS LAS DEMÁS FUNCIONES IGUAL (get_futures_price, calculate_indicators, trading_strategy, etc.)
-    # ... [Todas las funciones anteriores se mantienen igual] ...
-    
+    # MANTENER TODAS LAS FUNCIONES ORIGINALES SIN CAMBIOS
     def get_futures_price(self) -> dict:
         """Obtener precio de FUTUROS MEXC"""
         try:
@@ -379,10 +297,10 @@ class MexcFuturesTradingBot:
 
     def calculate_indicators(self) -> dict:
         """Calcular indicadores técnicos OPTIMIZADOS PARA HFT"""
-        if len(self.tick_data) < 10:
+        if len(self._current_tick_data) < 10:
             return {}
         
-        prices = [tick['bid'] for tick in list(self.tick_data)]
+        prices = [tick['bid'] for tick in list(self._current_tick_data)]
         df = pd.DataFrame(prices, columns=['price'])
         
         # Indicadores ULTRA RÁPIDOS para HFT
@@ -576,18 +494,15 @@ class MexcFuturesTradingBot:
         self.positions_history.clear()
         self.open_positions = 0
         self.log_messages.clear()
+        self._current_tick_data.clear()
         self._state['tick_data'] = []
         self.total_profit = 0
         self.log_message("🔄 Cuenta reiniciada a $255.00 - MODO TURBO", "INFO")
+        self._auto_save()
 
     def trading_cycle(self):
         """Ciclo principal de trading HFT ULTRA RÁPIDO"""
         self.log_message("🚀 INICIANDO MODO TURBO HFT - PERSISTENCIA ACTIVA")
-        
-        # Inicializar tick_data interno
-        self._current_tick_data = deque(maxlen=100)
-        if self._state['tick_data']:
-            self._current_tick_data.extend(self._state['tick_data'])
         
         consecutive_errors = 0
         max_consecutive_errors = 5
@@ -597,9 +512,8 @@ class MexcFuturesTradingBot:
                 tick_data = self.get_futures_price()
                 if tick_data:
                     self._current_tick_data.append(tick_data)
-                    # Actualizar estado periódicamente
+                    # Auto-guardar cada 10 ticks
                     if len(self._current_tick_data) % 10 == 0:
-                        self._state['tick_data'] = list(self._current_tick_data)
                         self._auto_save()
                 
                 indicators = self.calculate_indicators()
@@ -645,7 +559,7 @@ class MexcFuturesTradingBot:
 
     def get_performance_stats(self):
         """Obtener estadísticas de performance"""
-        current_data = list(self._current_tick_data) if hasattr(self, '_current_tick_data') and self._current_tick_data else self.tick_data
+        current_data = list(self._current_tick_data) if self._current_tick_data else []
         current_price = current_data[-1]['bid'] if current_data else 0
         
         # Calcular equity considerando posición abierta
@@ -689,13 +603,10 @@ class MexcFuturesTradingBot:
         
         return stats
 
-# =============================================
-# INTERFAZ STREAMLIT (SIN CAMBIOS)
-# =============================================
-
+# INTERFAZ STREAMLIT (MANTENER IGUAL)
 def main():
     st.title("🤖 Bot HFT Futuros MEXC - PERSISTENCIA TOTAL ⚡")
-    st.markdown("**CAPITAL INICIAL: $255.00 | APALANCAMIENTO: 3x | PERSISTENCIA INDEPENDIENTE**")
+    st.markdown("**CAPITAL INICIAL: $255.00 | APALANCAMIENTO: 3x | PERSISTENCIA ACTIVA**")
     st.markdown("---")
     
     # Inicializar el bot
@@ -751,7 +662,7 @@ def main():
         else:
             st.warning("⏸️ SISTEMA EN STANDBY")
             
-        if hasattr(bot, '_current_tick_data') and bot._current_tick_data:
+        if bot._current_tick_data:
             latest_tick = list(bot._current_tick_data)[-1]
             source = latest_tick.get('source', 'Unknown')
             st.info(f"**Fuente:** {source}")
@@ -821,7 +732,7 @@ def main():
     tab1, tab2, tab3 = st.tabs(["📈 Precios Futuros", "📋 Operaciones Turbo", "📝 Logs del Sistema"])
     
     with tab1:
-        current_data = list(bot._current_tick_data) if hasattr(bot, '_current_tick_data') and bot._current_tick_data else list(bot.tick_data)
+        current_data = list(bot._current_tick_data) if bot._current_tick_data else []
         if current_data:
             prices = [tick['bid'] for tick in current_data]
             timestamps = [tick['timestamp'] for tick in current_data]
@@ -912,7 +823,7 @@ def main():
                 else:
                     st.info(log_entry)
     
-    # Auto-refresh más rápido para HFT
+    # Auto-refresh
     if bot.is_running:
         time.sleep(2)
         st.rerun()
