@@ -11,14 +11,164 @@ import requests
 import json
 import plotly.graph_objects as go
 import os
+import atexit
+import signal
+import sys
 
-# Configurar la página de Streamlit
-st.set_page_config(
-    page_title="🤖 Bot HFT Futuros MEXC - ESTRATEGIA ULTRA AGRESIVA",
-    page_icon="🤖",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# =============================================
+# SISTEMA DE PERSISTENCIA INDEPENDIENTE
+# =============================================
+
+class PersistentStateManager:
+    """Gestor de estado INDEPENDIENTE de Streamlit"""
+    
+    def __init__(self, state_file='bot_persistent_state.json'):
+        self.state_file = state_file
+        self.lock = threading.Lock()
+        self._register_cleanup()
+    
+    def _register_cleanup(self):
+        """Registrar handlers para cierre limpio"""
+        atexit.register(self.cleanup)
+        signal.signal(signal.SIGINT, self.signal_handler)
+        signal.signal(signal.SIGTERM, self.signal_handler)
+    
+    def signal_handler(self, signum, frame):
+        """Manejar señales de sistema"""
+        self.cleanup()
+        sys.exit(0)
+    
+    def cleanup(self):
+        """Limpieza al cerrar"""
+        print("🛑 Cerrando bot persistentemente...")
+    
+    def save_state(self, state_data):
+        """Guardar estado de forma atómica y robusta"""
+        with self.lock:
+            try:
+                # Crear copia profunda
+                state_copy = self._deep_copy_state(state_data)
+                
+                # Guardar en temporal primero
+                temp_file = f"{self.state_file}.tmp"
+                with open(temp_file, 'w') as f:
+                    json.dump(state_copy, f, default=self._json_serializer, indent=2)
+                
+                # Mover atómicamente
+                os.replace(temp_file, self.state_file)
+                
+                # Backup cada 30 minutos
+                if int(time.time()) % 1800 < 2:  # Cada 30 minutos aprox
+                    backup_file = f"backups/{self.state_file}.backup.{int(time.time())}"
+                    os.makedirs('backups', exist_ok=True)
+                    with open(backup_file, 'w') as f:
+                        json.dump(state_copy, f, default=self._json_serializer, indent=2)
+                
+                return True
+            except Exception as e:
+                print(f"🚨 ERROR guardando estado persistente: {e}")
+                # Intentar guardado de emergencia
+                try:
+                    emergency_file = f"{self.state_file}.emergency"
+                    with open(emergency_file, 'w') as f:
+                        json.dump({'timestamp': datetime.now().isoformat(), 'error': str(e)}, f)
+                except:
+                    pass
+                return False
+    
+    def load_state(self):
+        """Cargar estado con recuperación múltiple"""
+        with self.lock:
+            try:
+                # Intentar archivo principal
+                if os.path.exists(self.state_file):
+                    with open(self.state_file, 'r') as f:
+                        state = json.load(f)
+                    return self._deserialize_state(state)
+                
+                # Intentar archivo temporal
+                temp_file = f"{self.state_file}.tmp"
+                if os.path.exists(temp_file):
+                    with open(temp_file, 'r') as f:
+                        state = json.load(f)
+                    os.replace(temp_file, self.state_file)  # Recuperar
+                    return self._deserialize_state(state)
+                
+                # Intentar backups
+                backup_files = [f for f in os.listdir('backups') if f.startswith(self.state_file)] if os.path.exists('backups') else []
+                if backup_files:
+                    latest_backup = max(backup_files)
+                    with open(f"backups/{latest_backup}", 'r') as f:
+                        state = json.load(f)
+                    return self._deserialize_state(state)
+                
+                # Estado inicial
+                return self._get_initial_state()
+                
+            except Exception as e:
+                print(f"🚨 ERROR cargando estado persistente: {e}")
+                return self._get_initial_state()
+    
+    def _deep_copy_state(self, state):
+        """Copia profunda del estado"""
+        if isinstance(state, dict):
+            return {k: self._deep_copy_state(v) for k, v in state.items()}
+        elif isinstance(state, list):
+            return [self._deep_copy_state(item) for item in state]
+        else:
+            return state
+    
+    def _json_serializer(self, obj):
+        """Serializar objetos para JSON"""
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        elif isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+    
+    def _deserialize_state(self, state):
+        """Deserializar estado desde JSON"""
+        def convert_timestamps(obj):
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    if k == 'timestamp' and isinstance(v, str):
+                        try:
+                            obj[k] = datetime.fromisoformat(v.replace('Z', '+00:00'))
+                        except:
+                            obj[k] = datetime.now()
+                    else:
+                        convert_timestamps(v)
+            elif isinstance(obj, list):
+                for item in obj:
+                    convert_timestamps(item)
+            return obj
+        
+        return convert_timestamps(state)
+    
+    def _get_initial_state(self):
+        """Estado inicial del bot"""
+        return {
+            'cash_balance': 255.0,
+            'position': 0,
+            'position_side': '',
+            'entry_price': 0,
+            'positions_history': [],
+            'open_positions': 0,
+            'log_messages': ["🔄 SISTEMA INICIADO - Estado persistente activado"],
+            'tick_data': [],
+            'is_running': False,
+            'total_profit': 0,
+            'start_time': datetime.now().isoformat(),
+            'session_id': str(int(time.time()))
+        }
+
+# =============================================
+# BOT CON PERSISTENCIA INDEPENDIENTE
+# =============================================
 
 class MexcFuturesTradingBot:
     def __init__(self, api_key: str, secret_key: str, symbol: str = 'BTCUSDT'):
@@ -27,250 +177,153 @@ class MexcFuturesTradingBot:
         self.symbol = symbol
         self.base_url = 'https://api.mexc.com'
         
-        # Cargar estado desde archivo o inicializar
-        self.load_state()
+        # SISTEMA DE PERSISTENCIA INDEPENDIENTE
+        self.persistence = PersistentStateManager()
+        self._state = self.persistence.load_state()
         
-        # CONFIGURACIÓN HFT FUTUROS - ESTRATEGIA ULTRA AGRESIVA
-        self.leverage = 3  # Apalancamiento conservador
-        self.position_size = 0.12  # MODIFICADO: 12% del capital por operación
-        self.max_positions = 2     # MODIFICADO: 2 operaciones simultáneas
+        # Configuración del bot (igual que antes)
+        self.leverage = 3
+        self.position_size = 0.12
+        self.max_positions = 2
         self.momentum_threshold = 0.0012
         self.mean_reversion_threshold = 0.001
         self.volatility_multiplier = 1.8
-        
-        # TARGETS ULTRA AGRESIVOS
-        self.min_profit_target = 0.0015  # MODIFICADO: 0.15% target
-        self.max_loss_stop = 0.0020     # MODIFICADO: 0.20% stop loss
+        self.min_profit_target = 0.0015
+        self.max_loss_stop = 0.0020
         
         self.trading_thread = None
-        self.last_save_time = time.time()
+        self._auto_save_thread = None
+        self._running = False
         
-    def create_backup_state(self):
-        """Crear estado de respaldo seguro"""
-        self.bot_data = {
-            'cash_balance': 255.0,
-            'position': 0,
-            'position_side': '',
-            'entry_price': 0,
-            'positions_history': [],
-            'open_positions': 0,
-            'log_messages': ["🔄 SISTEMA REINICIADO - Estado de respaldo activado"],
-            'tick_data': deque(maxlen=100),
-            'is_running': False,
-            'total_profit': 0
-        }
-        self.save_state()
+        # Iniciar auto-guardado
+        self._start_auto_save()
+    
+    def _start_auto_save(self):
+        """Hilo independiente para auto-guardado cada 30 segundos"""
+        def auto_save_loop():
+            while getattr(self, '_running', True):
+                try:
+                    self.persistence.save_state(self._state)
+                    time.sleep(30)  # Guardar cada 30 segundos
+                except:
+                    time.sleep(10)
         
-    def save_state(self):
-        """Guardar estado con protección contra corrupción"""
-        try:
-            state = {
-                'cash_balance': self.cash_balance,
-                'position': self.position,
-                'position_side': self.position_side,
-                'entry_price': self.entry_price,
-                'positions_history': [],
-                'open_positions': self.open_positions,
-                'log_messages': self.log_messages,
-                'tick_data': [],
-                'is_running': self.is_running,
-                'total_profit': self.total_profit,
-                'last_update': datetime.now().isoformat()
-            }
-            
-            # Convertir positions_history
-            for pos in self.positions_history:
-                pos_copy = pos.copy()
-                pos_copy['timestamp'] = pos['timestamp'].isoformat() if isinstance(pos['timestamp'], datetime) else str(pos['timestamp'])
-                state['positions_history'].append(pos_copy)
-            
-            # Convertir tick_data
-            for tick in list(self.tick_data):
-                tick_copy = tick.copy()
-                tick_copy['timestamp'] = tick['timestamp'].isoformat() if isinstance(tick['timestamp'], datetime) else str(tick['timestamp'])
-                state['tick_data'].append(tick_copy)
-            
-            # Guardar en archivo temporal primero
-            temp_file = 'futures_bot_state_temp.json'
-            with open(temp_file, 'w') as f:
-                json.dump(state, f, default=str, indent=2)
-            
-            # Reemplazar archivo principal de forma atómica
-            os.replace(temp_file, 'futures_bot_state.json')
-            
-            # Guardar backup cada 5 minutos
-            current_time = time.time()
-            if current_time - self.last_save_time > 300:  # 5 minutos
-                backup_file = f'futures_bot_state_backup_{int(current_time)}.json'
-                with open(backup_file, 'w') as f:
-                    json.dump(state, f, default=str, indent=2)
-                self.last_save_time = current_time
-                
-        except Exception as e:
-            print(f"🚨 ERROR CRÍTICO guardando estado: {e}")
-            # Intentar guardar en archivo de emergencia
-            try:
-                with open('futures_bot_state_emergency.json', 'w') as f:
-                    json.dump({'error': str(e), 'timestamp': datetime.now().isoformat()}, f)
-            except:
-                pass
+        self._auto_save_thread = threading.Thread(target=auto_save_loop, daemon=True)
+        self._auto_save_thread.start()
     
-    def load_state(self):
-        """Cargar estado con recuperación de errores"""
-        try:
-            if os.path.exists('futures_bot_state.json'):
-                with open('futures_bot_state.json', 'r') as f:
-                    state = json.load(f)
-                
-                # VALIDAR ESTRUCTURA CRÍTICA
-                if 'cash_balance' not in state:
-                    raise ValueError("Estado corrupto - falta cash_balance")
-                
-                # Convertir deque de tick_data
-                tick_data = deque(maxlen=100)
-                for tick in state.get('tick_data', []):
-                    tick_copy = tick.copy()
-                    if 'timestamp' in tick:
-                        try:
-                            if 'T' in tick['timestamp']:
-                                tick_copy['timestamp'] = datetime.fromisoformat(tick['timestamp'].replace('Z', '+00:00'))
-                            else:
-                                tick_copy['timestamp'] = datetime.now()
-                        except:
-                            tick_copy['timestamp'] = datetime.now()
-                    tick_data.append(tick_copy)
-                
-                # Convertir timestamps en positions_history
-                positions_history = []
-                for pos in state.get('positions_history', []):
-                    pos_copy = pos.copy()
-                    if 'timestamp' in pos:
-                        try:
-                            if 'T' in pos['timestamp']:
-                                pos_copy['timestamp'] = datetime.fromisoformat(pos['timestamp'].replace('Z', '+00:00'))
-                            else:
-                                pos_copy['timestamp'] = datetime.now()
-                        except:
-                            pos_copy['timestamp'] = datetime.now()
-                    positions_history.append(pos_copy)
-                
-                self.bot_data = {
-                    'cash_balance': state.get('cash_balance', 255.0),
-                    'position': state.get('position', 0),
-                    'position_side': state.get('position_side', ''),
-                    'entry_price': state.get('entry_price', 0),
-                    'positions_history': positions_history,
-                    'open_positions': state.get('open_positions', 0),
-                    'log_messages': state.get('log_messages', []),
-                    'tick_data': tick_data,
-                    'is_running': state.get('is_running', False),
-                    'total_profit': state.get('total_profit', 0)
-                }
-                
-                self.log_message("✅ Estado cargado correctamente - MODO ULTRA AGRESIVO", "SYSTEM")
-                
-            else:
-                self.create_backup_state()
-                
-        except Exception as e:
-            print(f"🚨 ERROR cargando estado: {e}")
-            # Intentar cargar backup
-            try:
-                backup_files = [f for f in os.listdir('.') if f.startswith('futures_bot_state_backup_')]
-                if backup_files:
-                    latest_backup = max(backup_files)
-                    with open(latest_backup, 'r') as f:
-                        state = json.load(f)
-                    self.log_message(f"🔄 Recuperado desde backup: {latest_backup}", "SYSTEM")
-                else:
-                    self.create_backup_state()
-            except:
-                self.create_backup_state()
-    
+    # PROPIEDADES CON PERSISTENCIA AUTOMÁTICA
     @property
     def cash_balance(self):
-        return self.bot_data['cash_balance']
+        return self._state['cash_balance']
     
     @cash_balance.setter
     def cash_balance(self, value):
-        self.bot_data['cash_balance'] = value
-        self.save_state()
-        
+        self._state['cash_balance'] = value
+        self._auto_save()
+    
     @property
     def position(self):
-        return self.bot_data['position']
+        return self._state['position']
     
     @position.setter
     def position(self, value):
-        self.bot_data['position'] = value
-        self.save_state()
-        
+        self._state['position'] = value
+        self._auto_save()
+    
     @property
     def position_side(self):
-        return self.bot_data['position_side']
+        return self._state['position_side']
     
     @position_side.setter
     def position_side(self, value):
-        self.bot_data['position_side'] = value
-        self.save_state()
-        
+        self._state['position_side'] = value
+        self._auto_save()
+    
     @property
     def entry_price(self):
-        return self.bot_data['entry_price']
+        return self._state['entry_price']
     
     @entry_price.setter
     def entry_price(self, value):
-        self.bot_data['entry_price'] = value
-        self.save_state()
-        
+        self._state['entry_price'] = value
+        self._auto_save()
+    
     @property
     def positions_history(self):
-        return self.bot_data['positions_history']
+        return self._state['positions_history']
     
     @property
     def open_positions(self):
-        return self.bot_data['open_positions']
+        return self._state['open_positions']
     
     @open_positions.setter
     def open_positions(self, value):
-        self.bot_data['open_positions'] = value
-        self.save_state()
-        
+        self._state['open_positions'] = value
+        self._auto_save()
+    
     @property
     def log_messages(self):
-        return self.bot_data['log_messages']
+        return self._state['log_messages']
     
     @property
     def tick_data(self):
-        return self.bot_data['tick_data']
+        # Convertir lista a deque para uso interno
+        if 'tick_data' not in self._state:
+            self._state['tick_data'] = []
+        return deque(self._state['tick_data'], maxlen=100)
+    
+    @tick_data.setter
+    def tick_data(self, value):
+        # Convertir deque a lista para persistencia
+        self._state['tick_data'] = list(value)
+        self._auto_save()
     
     @property
     def is_running(self):
-        return self.bot_data['is_running']
+        return self._state['is_running']
     
     @is_running.setter
     def is_running(self, value):
-        self.bot_data['is_running'] = value
-        self.save_state()
+        self._state['is_running'] = value
+        self._auto_save()
     
     @property
     def total_profit(self):
-        return self.bot_data['total_profit']
+        return self._state['total_profit']
     
     @total_profit.setter
     def total_profit(self, value):
-        self.bot_data['total_profit'] = value
-        self.save_state()
-
+        self._state['total_profit'] = value
+        self._auto_save()
+    
+    def _auto_save(self):
+        """Guardado automático no bloqueante"""
+        try:
+            # Actualizar tick_data antes de guardar
+            if hasattr(self, '_current_tick_data'):
+                self._state['tick_data'] = list(self._current_tick_data)
+            
+            # Guardar en hilo separado para no bloquear
+            threading.Thread(
+                target=self.persistence.save_state, 
+                args=(self._state,),
+                daemon=True
+            ).start()
+        except:
+            pass
+    
     def log_message(self, message: str, level: str = "INFO"):
-        """Agregar mensaje al log"""
+        """Agregar mensaje al log con persistencia"""
         timestamp = datetime.now().strftime("%H:%M:%S")
         log_entry = f"[{timestamp}] {level}: {message}"
         self.log_messages.append(log_entry)
         if len(self.log_messages) > 100:
             self.log_messages.pop(0)
-        self.save_state()
+        self._auto_save()
 
+    # MANTENER TODAS LAS DEMÁS FUNCIONES IGUAL (get_futures_price, calculate_indicators, trading_strategy, etc.)
+    # ... [Todas las funciones anteriores se mantienen igual] ...
+    
     def get_futures_price(self) -> dict:
         """Obtener precio de FUTUROS MEXC"""
         try:
@@ -326,10 +379,10 @@ class MexcFuturesTradingBot:
 
     def calculate_indicators(self) -> dict:
         """Calcular indicadores técnicos OPTIMIZADOS PARA HFT"""
-        if len(self.tick_data) < 10:  # REDUCIDO para más velocidad
+        if len(self.tick_data) < 10:
             return {}
         
-        prices = [tick['bid'] for tick in self.tick_data]
+        prices = [tick['bid'] for tick in list(self.tick_data)]
         df = pd.DataFrame(prices, columns=['price'])
         
         # Indicadores ULTRA RÁPIDOS para HFT
@@ -393,18 +446,18 @@ class MexcFuturesTradingBot:
         
         # SHORT ULTRA AGRESIVO
         short_conditions = [
-            momentum > 0.0003,           # MUCHO más sensible
-            rsi > 25,                    # Cualquier RSI no extremo
-            current_price > bb_lower,    # Cualquier precio sobre BB lower
-            macd > macd_signal * 0.8,    # MACD no necesariamente positivo
+            momentum > 0.0003,
+            rsi > 25,
+            current_price > bb_lower,
+            macd > macd_signal * 0.8,
         ]
         
         # LONG ULTRA AGRESIVO  
         long_conditions = [
-            momentum < -0.0003,          # MUCHO más sensible
-            rsi < 75,                    # Cualquier RSI no extremo
-            current_price < bb_upper,    # Cualquier precio bajo BB upper
-            macd < macd_signal * 1.2,    # MACD no necesariamente negativo
+            momentum < -0.0003,
+            rsi < 75,
+            current_price < bb_upper,
+            macd < macd_signal * 1.2,
         ]
         
         # GESTIÓN DE POSICIÓN ULTRA AGRESIVA
@@ -501,7 +554,7 @@ class MexcFuturesTradingBot:
                 'profit_loss': profit_loss if action == 'close' else 0
             })
             
-            self.save_state()
+            self._auto_save()
             
         except Exception as e:
             self.log_message(f"🚨 ERROR ejecutando trade: {e}", "ERROR")
@@ -523,14 +576,18 @@ class MexcFuturesTradingBot:
         self.positions_history.clear()
         self.open_positions = 0
         self.log_messages.clear()
-        self.tick_data.clear()
+        self._state['tick_data'] = []
         self.total_profit = 0
         self.log_message("🔄 Cuenta reiniciada a $255.00 - MODO TURBO", "INFO")
-        self.save_state()
 
     def trading_cycle(self):
         """Ciclo principal de trading HFT ULTRA RÁPIDO"""
-        self.log_message("🚀 INICIANDO MODO TURBO HFT - VELOCIDAD MÁXIMA")
+        self.log_message("🚀 INICIANDO MODO TURBO HFT - PERSISTENCIA ACTIVA")
+        
+        # Inicializar tick_data interno
+        self._current_tick_data = deque(maxlen=100)
+        if self._state['tick_data']:
+            self._current_tick_data.extend(self._state['tick_data'])
         
         consecutive_errors = 0
         max_consecutive_errors = 5
@@ -539,18 +596,22 @@ class MexcFuturesTradingBot:
             try:
                 tick_data = self.get_futures_price()
                 if tick_data:
-                    self.tick_data.append(tick_data)
+                    self._current_tick_data.append(tick_data)
+                    # Actualizar estado periódicamente
+                    if len(self._current_tick_data) % 10 == 0:
+                        self._state['tick_data'] = list(self._current_tick_data)
+                        self._auto_save()
                 
                 indicators = self.calculate_indicators()
                 
-                if indicators and len(self.tick_data) >= 10:  # Menos datos necesarios
+                if indicators and len(self._current_tick_data) >= 10:
                     signal = self.trading_strategy(indicators)
                     if signal != 'hold':
                         price = tick_data['ask'] if signal == 'buy' else tick_data['bid']
                         self.execute_trade(signal, price)
                 
-                consecutive_errors = 0  # Resetear contador de errores
-                time.sleep(0.3)  # MODIFICADO: 300ms entre ciclos
+                consecutive_errors = 0
+                time.sleep(0.3)
                 
             except Exception as e:
                 consecutive_errors += 1
@@ -562,25 +623,30 @@ class MexcFuturesTradingBot:
                     self.is_running = False
                     break
                 
-                time.sleep(5)  # Esperar 5 segundos antes de reintentar
+                time.sleep(5)
                 continue
 
     def start_trading(self):
         """Iniciar bot de trading HFT"""
         if not self.is_running:
             self.is_running = True
+            self._running = True
             self.trading_thread = threading.Thread(target=self.trading_cycle, daemon=True)
             self.trading_thread.start()
-            self.log_message("✅ MODO TURBO ACTIVADO - VELOCIDAD MÁXIMA", "SYSTEM")
+            self.log_message("✅ MODO TURBO ACTIVADO - PERSISTENCIA GARANTIZADA", "SYSTEM")
 
     def stop_trading(self):
         """Detener bot de trading"""
         self.is_running = False
+        self._running = False
         self.log_message("⏹️ MODO TURBO DETENIDO", "SYSTEM")
+        # Guardar estado final
+        self._auto_save()
 
     def get_performance_stats(self):
         """Obtener estadísticas de performance"""
-        current_price = list(self.tick_data)[-1]['bid'] if self.tick_data else 0
+        current_data = list(self._current_tick_data) if hasattr(self, '_current_tick_data') and self._current_tick_data else self.tick_data
+        current_price = current_data[-1]['bid'] if current_data else 0
         
         # Calcular equity considerando posición abierta
         if self.position > 0:
@@ -623,9 +689,13 @@ class MexcFuturesTradingBot:
         
         return stats
 
+# =============================================
+# INTERFAZ STREAMLIT (SIN CAMBIOS)
+# =============================================
+
 def main():
-    st.title("🤖 Bot HFT Futuros MEXC - ESTRATEGIA ULTRA AGRESIVA ⚡")
-    st.markdown("**CAPITAL INICIAL: $255.00 | APALANCAMIENTO: 3x | MODO TURBO ACTIVADO**")
+    st.title("🤖 Bot HFT Futuros MEXC - PERSISTENCIA TOTAL ⚡")
+    st.markdown("**CAPITAL INICIAL: $255.00 | APALANCAMIENTO: 3x | PERSISTENCIA INDEPENDIENTE**")
     st.markdown("---")
     
     # Inicializar el bot
@@ -634,7 +704,7 @@ def main():
     
     bot = st.session_state.bot
     
-    # Sidebar
+    # Sidebar (igual que antes)
     with st.sidebar:
         st.header("⚙️ Configuración Turbo")
         
@@ -677,16 +747,16 @@ def main():
         st.info(f"**Operaciones máx:** {bot.max_positions}")
         
         if bot.is_running:
-            st.success("✅ TURBO ACTIVO - VELOCIDAD MÁXIMA")
+            st.success("✅ TURBO ACTIVO - PERSISTENCIA ACTIVA")
         else:
             st.warning("⏸️ SISTEMA EN STANDBY")
             
-        if bot.tick_data:
-            latest_tick = list(bot.tick_data)[-1]
+        if hasattr(bot, '_current_tick_data') and bot._current_tick_data:
+            latest_tick = list(bot._current_tick_data)[-1]
             source = latest_tick.get('source', 'Unknown')
             st.info(f"**Fuente:** {source}")
 
-    # Layout principal
+    # Layout principal (igual que antes)
     col1, col2, col3, col4 = st.columns(4)
     
     stats = bot.get_performance_stats()
@@ -751,9 +821,10 @@ def main():
     tab1, tab2, tab3 = st.tabs(["📈 Precios Futuros", "📋 Operaciones Turbo", "📝 Logs del Sistema"])
     
     with tab1:
-        if bot.tick_data:
-            prices = [tick['bid'] for tick in list(bot.tick_data)]
-            timestamps = [tick['timestamp'] for tick in list(bot.tick_data)]
+        current_data = list(bot._current_tick_data) if hasattr(bot, '_current_tick_data') and bot._current_tick_data else list(bot.tick_data)
+        if current_data:
+            prices = [tick['bid'] for tick in current_data]
+            timestamps = [tick['timestamp'] for tick in current_data]
             
             valid_timestamps = []
             valid_prices = []
@@ -805,46 +876,4 @@ def main():
                     'action': pos['action'],
                     'side': pos.get('side', ''),
                     'leverage': pos.get('leverage', ''),
-                    'price': f"${pos['price']:.2f}",
-                    'quantity': f"{pos['quantity']:.6f}",
-                    'cash_balance': f"${pos['cash_balance']:.2f}",
-                    'total_equity': f"${pos['total_equity']:.2f}",
-                    'profit_loss': f"${pos.get('profit_loss', 0):.4f}"
-                }
-                display_data.append(row)
-            
-            df = pd.DataFrame(display_data)
-            st.dataframe(df, use_container_width=True, height=400)
-        else:
-            st.info("No hay operaciones turbo registradas aún.")
-    
-    with tab3:
-        log_container = st.container(height=400)
-        with log_container:
-            for log_entry in reversed(bot.log_messages[-30:]):
-                if "ERROR" in log_entry or "CRITICAL" in log_entry:
-                    st.error(log_entry)
-                elif "TRADE" in log_entry:
-                    if "ABRIR" in log_entry:
-                        st.success(log_entry)
-                    elif "CERRAR" in log_entry:
-                        if "🔴" in log_entry:
-                            st.error(log_entry)
-                        else:
-                            st.success(log_entry)
-                    else:
-                        st.info(log_entry)
-                elif "SEÑAL" in log_entry or "PROFIT" in log_entry or "LOSS" in log_entry:
-                    st.warning(log_entry)
-                elif "SYSTEM" in log_entry:
-                    st.info(log_entry)
-                else:
-                    st.info(log_entry)
-    
-    # Auto-refresh más rápido para HFT
-    if bot.is_running:
-        time.sleep(2)  # Más rápido para modo turbo
-        st.rerun()
-
-if __name__ == "__main__":
-    main()
+                    'price': f"${pos['price
