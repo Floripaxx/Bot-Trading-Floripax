@@ -13,6 +13,12 @@ logger = logging.getLogger(__name__)
 BOT_ACTIVE = False  # Estado del bot
 LAST_SYNC_TIME = None
 
+# ========== VARIABLES DE POSICIÓN (SI NO EXISTEN) ==========
+has_open_position = False
+entry_price = 0.0
+position_size = 0.0
+position_side = None
+
 # ========== INDICADOR VISUAL EN STREAMLIT ==========
 def display_bot_status():
     """Muestra el estado del bot de forma visible en la interfaz"""
@@ -21,7 +27,7 @@ def display_bot_status():
     if BOT_ACTIVE:
         st.sidebar.markdown(
             """
-            <div style="background-color: #00ff00; padding: 10px; border-radius: 5px; text-align: center;">
+            <div style="background-color: #4CAF50; padding: 10px; border-radius: 5px; text-align: center; color: white;">
                 <h3>🟢 BOT ACTIVO</h3>
                 <p>Ejecutando operaciones</p>
             </div>
@@ -31,7 +37,7 @@ def display_bot_status():
     else:
         st.sidebar.markdown(
             """
-            <div style="background-color: #ff4444; padding: 10px; border-radius: 5px; text-align: center;">
+            <div style="background-color: #ff4444; padding: 10px; border-radius: 5px; text-align: center; color: white;">
                 <h3>🔴 BOT DETENIDO</h3>
                 <p>No ejecuta operaciones</p>
             </div>
@@ -44,18 +50,18 @@ def display_bot_status():
         st.sidebar.info(f"🕐 Última sincronización: {LAST_SYNC_TIME}")
 
 # ========== FUNCIÓN DE SINCRONIZACIÓN FORZADA ==========
-async def force_sync_with_exchange():
+async def force_sync_with_exchange(exchange):
     """
     SINCRONIZACIÓN FORZADA: Verifica el estado REAL del exchange y ajusta el estado interno
     """
-    global LAST_SYNC_TIME
+    global LAST_SYNC_TIME, has_open_position, entry_price, position_size, position_side
     
     try:
         logger.info("🔄 INICIANDO SINCRONIZACIÓN FORZADA CON EXCHANGE...")
         
         # Obtener posiciones reales del exchange
         positions = await exchange.fetch_positions(['BTC/USDT:USDT'])
-        open_positions = [p for p in positions if float(p['contracts']) > 0]
+        open_positions = [p for p in positions if float(p.get('contracts', 0)) > 0]
         
         # DEBUG: Logear lo que encontró
         logger.info(f"📊 Exchange reporta {len(open_positions)} posiciones abiertas")
@@ -70,8 +76,7 @@ async def force_sync_with_exchange():
                     st.session_state.position_size = 0.0
                     st.session_state.position_side = None
             else:
-                # Si no usa session_state, resetear variables globales
-                global has_open_position, entry_price, position_size, position_side
+                # Resetear variables globales
                 if has_open_position:
                     logger.warning("🚨 CORRECCIÓN: Bot tenía posición fantasma. Reseteando estado.")
                     has_open_position = False
@@ -126,8 +131,8 @@ def create_control_panel():
     
     # Botón de sincronización manual
     if st.sidebar.button("🔄 Sincronizar Ahora"):
-        asyncio.create_task(force_sync_with_exchange())
         st.sidebar.info("Sincronización iniciada...")
+        # La sincronización se ejecutará en el loop principal
     
     # Mostrar estado del bot
     display_bot_status()
@@ -136,8 +141,26 @@ def create_control_panel():
 async def main():
     logger.info("🤖 INICIANDO BOT DE TRADING...")
     
+    # ==== INICIALIZAR EXCHANGE (AGREGAR ESTO) ====
+    try:
+        # REEMPLAZA ESTO CON TU CÓDIGO DE INICIALIZACIÓN DEL EXCHANGE
+        from ccxt import binanceusdm  # o el exchange que uses
+        
+        exchange = binanceusdm({
+            'apiKey': 'tu_api_key',
+            'secret': 'tu_secret',
+            'enableRateLimit': True,
+            'sandbox': False,  # Cambia a True para testing
+        })
+        
+        logger.info("✅ Exchange inicializado correctamente")
+        
+    except Exception as e:
+        logger.error(f"❌ Error al inicializar exchange: {e}")
+        return
+    
     # ==== CAMBIO CRÍTICO: Sincronización ANTES de cualquier operación ====
-    sync_result = await force_sync_with_exchange()
+    sync_result = await force_sync_with_exchange(exchange)
     if sync_result == "ERROR":
         logger.error("NO SE PUEDE INICIAR - Error de sincronización")
         return
@@ -153,6 +176,8 @@ async def main():
                 # Ejemplo:
                 # await check_signals()
                 # await execute_trades()
+                
+                # Tu lógica de trading aquí
                 pass
             else:
                 # Bot detenido - esperar
@@ -166,10 +191,12 @@ async def main():
             await asyncio.sleep(5)
 
 # ========== FUNCIÓN DE CIERRE MEJORADA ==========
-async def close_position(price):
+async def close_position(exchange, price):
     """
     Función de cierre con verificación de confirmación
     """
+    global has_open_position, entry_price, position_size, position_side
+    
     try:
         # [MANTENER TU CÓDIGO ORIGINAL DE CERRAR POSICIÓN]
         
@@ -182,7 +209,7 @@ async def close_position(price):
         
         # Verificar que realmente se cerró
         positions = await exchange.fetch_positions(['BTC/USDT:USDT'])
-        open_positions = [p for p in positions if float(p['contracts']) > 0]
+        open_positions = [p for p in positions if float(p.get('contracts', 0)) > 0]
         
         if len(open_positions) == 0:
             logger.info("✅ Posición cerrada confirmada por exchange")
@@ -190,8 +217,10 @@ async def close_position(price):
             if hasattr(st, 'session_state'):
                 st.session_state.has_open_position = False
             else:
-                global has_open_position
                 has_open_position = False
+                entry_price = 0.0
+                position_size = 0.0
+                position_side = None
         else:
             logger.warning("⚠️ Posición podría no haberse cerrado completamente")
             
@@ -220,4 +249,8 @@ if __name__ == "__main__":
     main_streamlit()
     
     # Iniciar bot de trading en segundo plano
-    asyncio.run(main())
+    # Usar esta línea si Streamlit no bloquea el event loop
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        logger.error(f"Error al ejecutar bot: {e}")
