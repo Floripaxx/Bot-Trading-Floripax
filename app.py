@@ -454,16 +454,15 @@ class MexcFuturesTradingBot:
         return 'hold'
 
     def execute_trade(self, action: str, price: float):
-        """Ejecutar operación en FUTUROS - MODO TURBO CON PROTECCIÓN DE CAPITAL"""
+        """Ejecutar operación en FUTUROS - MODO TURBO CON CÁLCULO CORREGIDO"""
         try:
-            # ========== MÍNIMO CAMBIO CRÍTICO: VERIFICAR CAPITAL POSITIVO ==========
-            if self.cash_balance <= 10.0:  # Si el capital es menor a $10, NO OPERAR
+            # ========== VERIFICAR CAPITAL POSITIVO ==========
+            if self.cash_balance <= 10.0:
                 self.log_message("🛑 CAPITAL INSUFICIENTE - No se pueden abrir operaciones", "ERROR")
                 return
                 
-            # ========== MÍNIMO CAMBIO: TAMAÑO MÁS CONSERVADOR ==========
             dynamic_position_size = self.calculate_dynamic_position_size()
-            safe_position_size = min(dynamic_position_size, 0.03)  # MÁXIMO 3% para seguridad
+            safe_position_size = min(dynamic_position_size, 0.03)
             
             investment_amount = 0
             quantity = 0
@@ -472,15 +471,16 @@ class MexcFuturesTradingBot:
             profit_loss = 0
             
             if action in ['buy', 'sell'] and self.open_positions < self.max_positions:
-                # ABRIR POSICIÓN CON VERIFICACIÓN DE SEGURIDAD
+                # CALCULAR INVERSIÓN BASADA EN CAPITAL ACTUAL
                 investment_amount = self.cash_balance * safe_position_size * self.leverage
                 
-                # VERIFICAR que no exceda margen disponible
+                # VERIFICAR MARGEN
                 required_margin = investment_amount / self.leverage
-                if required_margin > self.cash_balance * 0.8:  # Dejar 20% de buffer
+                if required_margin > self.cash_balance * 0.8:
                     self.log_message("❌ MARGEN INSUFICIENTE - Operación cancelada", "ERROR")
                     return
                     
+                # ========== CORRECCIÓN CRÍTICA: CALCULAR CANTIDAD CON PRECIO ACTUAL ==========
                 quantity = investment_amount / price
                 
                 if investment_amount > self.cash_balance * self.leverage:
@@ -489,10 +489,10 @@ class MexcFuturesTradingBot:
                 
                 # Actualizar balances
                 self.cash_balance -= (investment_amount / self.leverage)
-                self.position += quantity
-                self.entry_price = price if self.position == quantity else ((self.entry_price * (self.position - quantity)) + (price * quantity)) / self.position
+                self.position = quantity  # CORRECCIÓN: Usar quantity directamente, no acumular
+                self.entry_price = price
                 self.position_side = 'long' if action == 'buy' else 'short'
-                self.open_positions += 1
+                self.open_positions = 1
                 
                 side_emoji = "🟢" if action == 'buy' else "🔴"
                 trade_info = f"{side_emoji} TURBO {self.position_side.upper()} {self.symbol}: {quantity:.6f} @ ${price:.2f} | Size: {safe_position_size*100:.1f}% | Margen: ${investment_amount/self.leverage:.2f} | Leverage: {self.leverage}x"
@@ -925,4 +925,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
