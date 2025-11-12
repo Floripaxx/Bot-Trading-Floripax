@@ -9,10 +9,12 @@ import base64
 from datetime import datetime
 from urllib.parse import urlencode
 
-# CONFIGURACIÓN MEXC API
+# CONFIGURACIÓN MEXC API - MODO DEMO
+DEMO_MODE = True  # 🔒 MODO DEMO ACTIVADO
+
 MEXC_BASE_URL = "https://api.mexc.com"
-API_KEY = "tu_api_key_aqui"  # 🔑 Configurar en secrets
-SECRET_KEY = "tu_secret_key_aqui"  # 🔑 Configurar en secrets
+API_KEY = "demo_mode"  
+SECRET_KEY = "demo_mode"
 
 SYMBOL = "BTCUSDT"
 LEVERAGE = 3
@@ -28,6 +30,7 @@ class MexcTradingBot:
         self.open_positions = []
         self.trade_count = 0
         self.last_trade_time = None
+        self.demo_mode = DEMO_MODE  # 🔒 MODO DEMO
         self.daily_trades = 0
         self.last_daily_reset = datetime.now().date()
         self.compound_growth = 1.0
@@ -37,6 +40,9 @@ class MexcTradingBot:
         
     def sign_request(self, params):
         """Firma la solicitud para MEXC API"""
+        if self.demo_mode:
+            return params  # 🔒 No firma en demo
+            
         query_string = urlencode(params)
         signature = hmac.new(
             SECRET_KEY.encode('utf-8'),
@@ -47,10 +53,22 @@ class MexcTradingBot:
         return params
     
     def mexc_api_request(self, endpoint, params=None, method='GET'):
-        """Realiza solicitud a MEXC API"""
+        """Realiza solicitud a MEXC API - Modo Demo"""
         if params is None:
             params = {}
         
+        if self.demo_mode:
+            # 🔒 SIMULACIÓN EN MODO DEMO
+            time.sleep(0.1)  # Simular latencia de API
+            if 'ticker' in endpoint:
+                # Simular precio de BTC
+                return {'price': str(34450.25 + np.random.normal(0, 25))}
+            elif 'order' in endpoint:
+                # Simular orden ejecutada
+                return {'orderId': f"DEMO_{int(time.time())}"}
+            return {'status': 'demo_success'}
+        
+        # 🔑 CÓDIGO REAL (no se ejecuta en demo)
         params['timestamp'] = int(time.time() * 1000)
         params['recvWindow'] = 5000
         
@@ -76,24 +94,33 @@ class MexcTradingBot:
             return None
     
     def get_btc_price(self):
-        """Obtiene precio REAL de BTC desde MEXC"""
+        """Obtiene precio de BTC - Modo Demo/Real"""
         try:
             endpoint = "/api/v3/ticker/price"
             params = {'symbol': SYMBOL}
             data = self.mexc_api_request(endpoint, params)
             if data:
                 price = float(data['price'])
-                self.add_log(f"📊 Precio BTC: ${price:.2f}", "INFO")
+                mode = "🔒 DEMO" if self.demo_mode else "🔑 REAL"
+                self.add_log(f"📊 Precio BTC {mode}: ${price:.2f}", "INFO")
                 return price
         except Exception as e:
             self.add_log(f"Error obteniendo precio: {e}", "ERROR")
         
-        # Fallback a precio simulado si hay error
+        # Fallback
         return 34450.25 + np.random.normal(0, 25)
     
     def execute_real_trade(self, side, quantity):
-        """Ejecuta operación REAL en MEXC"""
+        """Ejecuta operación - Modo Demo/Real"""
+        if self.demo_mode:
+            # 🔒 SIMULAR EJECUCIÓN EN DEMO
+            time.sleep(0.2)  # Simular tiempo de ejecución
+            order_id = f"DEMO_ORDER_{int(time.time())}"
+            self.add_log(f"🔒 DEMO - Orden {order_id} simulada: {side} {quantity:.6f} BTC", "TRADE")
+            return True, f"Orden DEMO {order_id} simulada"
+        
         try:
+            # 🔑 EJECUCIÓN REAL (no se usa en demo)
             endpoint = "/api/v3/order"
             params = {
                 'symbol': SYMBOL,
@@ -106,11 +133,11 @@ class MexcTradingBot:
             data = self.mexc_api_request(endpoint, params, 'POST')
             if data:
                 order_id = data.get('orderId', 'N/A')
-                self.add_log(f"✅ Orden {order_id} ejecutada: {side} {quantity:.6f} BTC", "TRADE")
-                return True, f"Orden {order_id} ejecutada"
-            return False, "Error en ejecución"
+                self.add_log(f"✅ Orden REAL {order_id} ejecutada: {side} {quantity:.6f} BTC", "TRADE")
+                return True, f"Orden REAL {order_id} ejecutada"
+            return False, "Error en ejecución real"
         except Exception as e:
-            return False, f"Error: {str(e)}"
+            return False, f"Error real: {str(e)}"
     
     def add_log(self, message, log_type="INFO"):
         """AGREGA LOGS"""
@@ -129,7 +156,8 @@ class MexcTradingBot:
             # Reinvertir el 100% de las ganancias para crecimiento compuesto agresivo
             self.profits_reinvested += profit
             self.compound_growth = 1.0 + (self.profits_reinvested / self.initial_capital)
-            self.add_log(f"💰 Interés Compuesto: +${profit:.4f} | Factor: {self.compound_growth:.4f}", "COMPOUND")
+            mode = "🔒 DEMO" if self.demo_mode else "🔑 REAL"
+            self.add_log(f"💰 Interés Compuesto {mode}: +${profit:.4f} | Factor: {self.compound_growth:.4f}", "COMPOUND")
             
     def calculate_position(self, price):
         """CALCULA POSICIÓN CON INTERÉS COMPUESTO"""
@@ -142,12 +170,13 @@ class MexcTradingBot:
         return min(position_size, max_position)
     
     def execute_trade(self, action, side, price):
-        """EJECUTA OPERACIÓN CON MEXC"""
+        """EJECUTA OPERACIÓN CON MEXC - Modo Demo/Real"""
         current_date = datetime.now().date()
         if current_date != self.last_daily_reset:
             self.daily_trades = 0
             self.last_daily_reset = current_date
-            self.add_log("🔄 Reset diario completado", "INFO")
+            mode = "🔒 DEMO" if self.demo_mode else "🔑 REAL"
+            self.add_log(f"🔄 Reset diario {mode} completado", "INFO")
             
         if self.daily_trades >= MAX_DAILY_TRADES:
             return False, "Límite diario alcanzado"
@@ -161,7 +190,7 @@ class MexcTradingBot:
         if cost > self.cash_balance:
             return False, "Fondos insuficientes"
         
-        # 🔥 EJECUCIÓN REAL EN MEXC
+        # EJECUCIÓN EN MEXC (Demo/Real)
         side_map = {'buy': 'BUY', 'sell': 'SELL'}
         success, message = self.execute_real_trade(side_map[action], quantity)
         
@@ -173,6 +202,7 @@ class MexcTradingBot:
                 'side': side,
                 'price': price,
                 'quantity': quantity,
+                'demo': self.demo_mode  # 🔒 Marcar como demo
             }
             
             self.open_positions.append(trade)
@@ -181,7 +211,8 @@ class MexcTradingBot:
             self.daily_trades += 1
             self.last_trade_time = datetime.now()
             
-            log_msg = f"💰 {action.upper()} {quantity:.6f} BTC @ ${price:.2f}"
+            mode = "🔒 DEMO" if self.demo_mode else "🔑 REAL"
+            log_msg = f"💰 {mode} {action.upper()} {quantity:.6f} BTC @ ${price:.2f}"
             self.add_log(log_msg, "TRADE")
             return True, log_msg
         else:
@@ -189,7 +220,7 @@ class MexcTradingBot:
     
     def close_position(self, position, close_price):
         """CIERRA POSICIÓN CON INTERÉS COMPUESTO"""
-        # Ejecutar orden de cierre en MEXC
+        # Ejecutar orden de cierre en MEXC (Demo/Real)
         close_side = 'BUY' if position['side'] == 'short' else 'SELL'
         success, message = self.execute_real_trade(close_side, position['quantity'])
         
@@ -210,7 +241,8 @@ class MexcTradingBot:
         self.open_positions.remove(position)
         
         pnl_type = "✅ GANANCIA" if pnl > 0 else "❌ PÉRDIDA"
-        log_msg = f"{pnl_type}: ${pnl:.4f}"
+        mode = "🔒 DEMO" if self.demo_mode else "🔑 REAL"
+        log_msg = f"{mode} {pnl_type}: ${pnl:.4f}"
         self.add_log(log_msg, "CLOSE")
         return pnl
     
@@ -240,78 +272,59 @@ class MexcTradingBot:
         return None
 
 def main():
-    st.set_page_config(page_title="Bot HF MEXC", layout="wide")
-    st.title("🤖 Bot Alta Frecuencia BTC - MEXC API REAL")
+    st.set_page_config(page_title="Bot HF MEXC DEMO", layout="wide")
+    st.title("🤖 Bot Alta Frecuencia BTC - 🔒 MODO DEMO MEXC")
     
-    # Configurar API Keys (usar secrets en producción)
-    if 'api_configured' not in st.session_state:
-        st.session_state.api_configured = False
+    # Mostrar estado DEMO prominente
+    st.warning("🔒 **MODO DEMO ACTIVADO** - No se ejecutarán órdenes reales en MEXC")
     
-    with st.sidebar:
-        st.header("🔑 Configuración MEXC API")
-        api_key = st.text_input("API Key", type="password")
-        secret_key = st.text_input("Secret Key", type="password")
-        
-        if st.button("🔗 Conectar con MEXC"):
-            if api_key and secret_key:
-                st.session_state.api_key = api_key
-                st.session_state.secret_key = secret_key
-                st.session_state.api_configured = True
-                st.success("✅ API Configurada")
-            else:
-                st.error("❌ Ingresa ambas claves API")
-    
-    if not st.session_state.get('api_configured', False):
-        st.warning("⚠️ Configura las API Keys de MEXC en el sidebar")
-        return
-    
-    # Configurar API keys globales
-    global API_KEY, SECRET_KEY
-    API_KEY = st.session_state.api_key
-    SECRET_KEY = st.session_state.secret_key
-    
-    # Inicializar bot
+    # Inicializar bot en modo DEMO
     if 'bot' not in st.session_state:
         st.session_state.bot = MexcTradingBot()
         st.session_state.running = False
     
     # Sidebar
     with st.sidebar:
-        st.header("🎯 Control")
+        st.header("🎯 Control DEMO")
         
         status = "🟢 EN LÍNEA" if st.session_state.running else "🔴 DESCONECTADO"
-        st.subheader(status)
+        st.subheader(f"{status} - 🔒 DEMO")
         
-        if st.button("🚀 Iniciar Bot HF" if not st.session_state.running else "⏸️ Detener Bot"):
+        if st.button("🚀 Iniciar Bot DEMO" if not st.session_state.running else "⏸️ Detener Bot"):
             st.session_state.running = not st.session_state.running
             if st.session_state.running:
-                st.session_state.bot.add_log("🚀 BOT HF INICIADO - MEXC API")
+                st.session_state.bot.add_log("🚀 BOT DEMO INICIADO - MEXC SIMULACIÓN")
             else:
-                st.session_state.bot.add_log("🛑 BOT DETENIDO")
+                st.session_state.bot.add_log("🛑 BOT DEMO DETENIDO")
         
         st.divider()
         st.write(f"**Par:** {SYMBOL}")
+        st.write(f"**Modo:** 🔒 DEMO")
         st.write(f"**Apalancamiento:** {LEVERAGE}x")
         st.write(f"**Frecuencia:** {MAX_DAILY_TRADES} ops/día")
         st.write(f"**Velocidad:** {MIN_TIME_BETWEEN_TRADES}s")
         st.write(f"**Interés Compuesto:** ACTIVADO")
+        
+        # Opción para cambiar a modo REAL (protegido)
+        st.divider()
+        st.info("Para modo REAL, cambia `DEMO_MODE = False` en el código")
     
     # Métricas principales
     bot = st.session_state.bot
     
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("💰 Capital", f"${bot.total_equity:.2f}")
+        st.metric("💰 Capital DEMO", f"${bot.total_equity:.2f}")
     with col2:
         growth = (bot.compound_growth - 1) * 100
-        st.metric("📈 Compound", f"{growth:.2f}%")
+        st.metric("📈 Compound DEMO", f"{growth:.2f}%")
     with col3:
-        st.metric("⚡ Ops Hoy", f"{bot.daily_trades}/{MAX_DAILY_TRADES}")
+        st.metric("⚡ Ops Hoy DEMO", f"{bot.daily_trades}/{MAX_DAILY_TRADES}")
     with col4:
-        st.metric("🎯 Abiertas", len(bot.open_positions))
+        st.metric("🎯 Abiertas DEMO", len(bot.open_positions))
     
     # Logs en tiempo real
-    st.subheader("📋 Logs MEXC en Tiempo Real")
+    st.subheader("📋 Logs MEXC DEMO en Tiempo Real")
     logs_container = st.container()
     
     with logs_container:
@@ -332,9 +345,9 @@ def main():
         else:
             st.info("No hay logs aún...")
     
-    # Ejecución del bot
+    # Ejecución del bot DEMO
     if st.session_state.running:
-        # 🔥 Obtener precio REAL de MEXC
+        # Obtener precio (simulado en demo)
         btc_price = bot.get_btc_price()
         
         # Verificar tiempo entre operaciones (ALTA FRECUENCIA)
@@ -364,25 +377,25 @@ def main():
         time.sleep(1)  # 🔥 ALTA FRECUENCIA: 1 segundo
         st.rerun()
     
-    # Posiciones abiertas
+    # Posiciones abiertas DEMO
     if bot.open_positions:
-        st.subheader("📊 Posiciones Abiertas MEXC")
+        st.subheader("📊 Posiciones Abiertas DEMO")
         for pos in bot.open_positions:
-            st.write(f"- {pos['side'].upper()} {pos['quantity']:.6f} BTC @ ${pos['price']:.2f}")
+            st.write(f"- {pos['side'].upper()} {pos['quantity']:.6f} BTC @ ${pos['price']:.2f} 🔒")
     else:
-        st.info("No hay posiciones abiertas")
+        st.info("No hay posiciones abiertas DEMO")
     
-    # Estadísticas
-    with st.expander("📈 Estadísticas HF MEXC"):
+    # Estadísticas DEMO
+    with st.expander("📈 Estadísticas HF DEMO"):
         col1, col2 = st.columns(2)
         with col1:
             st.write(f"**Capital inicial:** ${BASE_CAPITAL:.2f}")
-            st.write(f"**Ganancia/Perdida:** ${bot.total_equity - BASE_CAPITAL:.2f}")
-            st.write(f"**Rendimiento:** {((bot.total_equity - BASE_CAPITAL) / BASE_CAPITAL * 100):.2f}%")
+            st.write(f"**Ganancia/Perdida DEMO:** ${bot.total_equity - BASE_CAPITAL:.2f}")
+            st.write(f"**Rendimiento DEMO:** {((bot.total_equity - BASE_CAPITAL) / BASE_CAPITAL * 100):.2f}%")
         with col2:
-            st.write(f"**Operaciones totales:** {bot.trade_count}")
+            st.write(f"**Operaciones totales DEMO:** {bot.trade_count}")
             st.write(f"**Factor compound:** {bot.compound_growth:.4f}")
-            st.write(f"**Ganancias reinvertidas:** ${bot.profits_reinvested:.4f}")
+            st.write(f"**Ganancias reinvertidas DEMO:** ${bot.profits_reinvested:.4f}")
 
 if __name__ == "__main__":
     main()
