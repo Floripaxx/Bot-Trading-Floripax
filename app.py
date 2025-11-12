@@ -5,6 +5,8 @@ from collections import deque
 from datetime import datetime
 import pandas as pd
 import numpy as np
+import hmac
+import hashlib
 import requests
 import json
 import plotly.graph_objects as go
@@ -12,271 +14,227 @@ import os
 
 # Configurar la página de Streamlit
 st.set_page_config(
-    page_title="?? Bot HFT Futuros MEXC - ESTRATEGIA ULTRA AGRESIVA",
+    page_title="?? Bot HFT MEXC",
     page_icon="??",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# ========== SISTEMA DE SINCRONIZACIÓN (AGREGAR AL INICIO) ==========
-def force_sync_position_state(bot):
-    """
-    SINCRONIZACIÓN MÍNIMA: Resuelve el problema de posición fantasma
-    """
-    try:
-        # Verificar si hay posición en memoria pero no debería existir
-        if (bot.position > 0 or bot.open_positions > 0) and not bot._running:
-            print("🔄 SINCRONIZACIÓN: Reseteando estado de posición fantasma")
-            bot.position = 0
-            bot.open_positions = 0
-            bot.position_side = ''
-            bot.entry_price = 0
-            return True
-        return False
-    except Exception as e:
-        print(f"❌ Error en sincronización: {e}")
-        return False
-
-class PersistentStateManager:
-    """Gestor de estado INDEPENDIENTE de Streamlit - VERSIÓN SIMPLIFICADA"""
-    
-    def __init__(self, state_file='bot_persistent_state.json'):
-        self.state_file = state_file
-        self.lock = threading.Lock()
-    
-    def save_state(self, state_data):
-        """Guardar estado de forma atómica"""
-        with self.lock:
-            try:
-                # Crear copia del estado
-                state_copy = self._deep_copy_state(state_data)
-                
-                # Guardar en temporal primero
-                temp_file = f"{self.state_file}.tmp"
-                with open(temp_file, 'w') as f:
-                    json.dump(state_copy, f, default=self._json_serializer, indent=2)
-                
-                # Mover atómicamente
-                os.replace(temp_file, self.state_file)
-                return True
-                
-            except Exception as e:
-                print(f"?? ERROR guardando estado: {e}")
-                return False
-    
-    def load_state(self):
-        """Cargar estado con recuperación"""
-        with self.lock:
-            try:
-                # Intentar archivo principal
-                if os.path.exists(self.state_file):
-                    with open(self.state_file, 'r') as f:
-                        state = json.load(f)
-                    return self._deserialize_state(state)
-                
-                # Estado inicial
-                return self._get_initial_state()
-                
-            except Exception as e:
-                print(f"?? ERROR cargando estado: {e}")
-                return self._get_initial_state()
-    
-    def _deep_copy_state(self, state):
-        """Copia simple del estado"""
-        return json.loads(json.dumps(state, default=self._json_serializer))
-    
-    def _json_serializer(self, obj):
-        """Serializar objetos para JSON"""
-        if isinstance(obj, datetime):
-            return obj.isoformat()
-        elif isinstance(obj, np.integer):
-            return int(obj)
-        elif isinstance(obj, np.floating):
-            return float(obj)
-        elif isinstance(obj, np.ndarray):
-            return obj.tolist()
-        raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
-    
-    def _deserialize_state(self, state):
-        """Deserializar estado desde JSON"""
-        def convert_timestamps(obj):
-            if isinstance(obj, dict):
-                for k, v in obj.items():
-                    if k == 'timestamp' and isinstance(v, str):
-                        try:
-                            obj[k] = datetime.fromisoformat(v.replace('Z', '+00:00'))
-                        except:
-                            obj[k] = datetime.now()
-                    else:
-                        convert_timestamps(v)
-            elif isinstance(obj, list):
-                for item in obj:
-                    convert_timestamps(item)
-            return obj
-        
-        return convert_timestamps(state)
-    
-    def _get_initial_state(self):
-        """Estado inicial del bot"""
-        return {
-            'cash_balance': 255.0,
-            'position': 0,
-            'position_side': '',
-            'entry_price': 0,
-            'positions_history': [],
-            'open_positions': 0,
-            'log_messages': ["?? SISTEMA INICIADO - Estado persistente activado"],
-            'tick_data': [],
-            'is_running': False,
-            'total_profit': 0,
-            'start_time': datetime.now().isoformat()
-        }
-
-class MexcFuturesTradingBot:
+class MexcHighFrequencyTradingBot:
     def __init__(self, api_key: str, secret_key: str, symbol: str = 'BTCUSDT'):
         self.api_key = api_key
         self.secret_key = secret_key
         self.symbol = symbol
         self.base_url = 'https://api.mexc.com'
         
-        # SISTEMA DE PERSISTENCIA SIMPLIFICADO
-        self.persistence = PersistentStateManager()
-        self._state = self.persistence.load_state()
+        # Cargar estado desde archivo o inicializar
+        self.load_state()
         
-        # Configuración del bot (MANTENER IGUAL)
-        self.leverage = 3
-        self.position_size = 0.12
-        self.max_positions = 2
-        self.momentum_threshold = 0.0012
-        self.mean_reversion_threshold = 0.001
-        self.volatility_multiplier = 1.8
-        self.min_profit_target = 0.0015
-        self.max_loss_stop = 0.0020
+        # Configuración HFT ULTRA-RÁPIDO - MÁS OPERACIONES
+        self.position_size = 0.15       # MODIFICADO: 15% por operación
+        self.max_positions = 1          # MODIFICADO: SOLO 1 posición máxima
+        self.momentum_threshold = 0.001 # MODIFICADO: 0.1% para señales más sensibles
+        self.mean_reversion_threshold = 0.0015  # MODIFICADO: Más sensible
+        self.volatility_multiplier = 1.8        # MODIFICADO: Más tolerante a volatilidad
+        self.min_profit_target = 0.003  # MODIFICADO: 0.3% de ganancia mínima
+        self.max_loss_stop = 0.002      # MODIFICADO: 0.2% de stop loss
         
         self.trading_thread = None
-        self._running = False
         
-        # Inicializar tick_data
-        self._current_tick_data = deque(maxlen=100)
-        if self._state['tick_data']:
-            self._current_tick_data.extend(self._state['tick_data'])
-        
-        # ========== SINCRONIZACIÓN INICIAL (AGREGAR) ==========
-        force_sync_position_state(self)
-    
-    def _auto_save(self):
-        """Guardado automático simple"""
+    def save_state(self):
+        """Guardar estado en archivo JSON"""
         try:
-            # Actualizar tick_data antes de guardar
-            self._state['tick_data'] = list(self._current_tick_data)
-            # Guardar en hilo separado
-            threading.Thread(
-                target=self.persistence.save_state, 
-                args=(self._state,),
-                daemon=True
-            ).start()
-        except:
-            pass
+            state = {
+                'cash_balance': self.cash_balance,
+                'position': self.position,
+                'entry_price': self.entry_price,
+                'positions_history': [],
+                'open_positions': self.open_positions,
+                'log_messages': self.log_messages,
+                'tick_data': [],
+                'is_running': self.is_running,
+                'total_profit': self.total_profit
+            }
+            
+            # Convertir positions_history
+            for pos in self.positions_history:
+                pos_copy = pos.copy()
+                pos_copy['timestamp'] = pos['timestamp'].isoformat() if isinstance(pos['timestamp'], datetime) else str(pos['timestamp'])
+                state['positions_history'].append(pos_copy)
+            
+            # Convertir tick_data
+            for tick in list(self.tick_data):
+                tick_copy = tick.copy()
+                tick_copy['timestamp'] = tick['timestamp'].isoformat() if isinstance(tick['timestamp'], datetime) else str(tick['timestamp'])
+                state['tick_data'].append(tick_copy)
+                    
+            with open('bot_state.json', 'w') as f:
+                json.dump(state, f, default=str, indent=2)
+        except Exception as e:
+            print(f"Error guardando estado: {e}")
     
-    # PROPIEDADES CON PERSISTENCIA (MANTENER IGUAL)
+    def load_state(self):
+        """Cargar estado desde archivo JSON"""
+        try:
+            if os.path.exists('bot_state.json'):
+                with open('bot_state.json', 'r') as f:
+                    state = json.load(f)
+                
+                # Convertir deque de tick_data
+                tick_data = deque(maxlen=50)
+                for tick in state.get('tick_data', []):
+                    tick_copy = tick.copy()
+                    if 'timestamp' in tick:
+                        try:
+                            if 'T' in tick['timestamp']:
+                                tick_copy['timestamp'] = datetime.fromisoformat(tick['timestamp'].replace('Z', '+00:00'))
+                            else:
+                                tick_copy['timestamp'] = datetime.now()
+                        except:
+                            tick_copy['timestamp'] = datetime.now()
+                    tick_data.append(tick_copy)
+                
+                # Convertir timestamps en positions_history
+                positions_history = []
+                for pos in state.get('positions_history', []):
+                    pos_copy = pos.copy()
+                    if 'timestamp' in pos:
+                        try:
+                            if 'T' in pos['timestamp']:
+                                pos_copy['timestamp'] = datetime.fromisoformat(pos['timestamp'].replace('Z', '+00:00'))
+                            else:
+                                pos_copy['timestamp'] = datetime.now()
+                        except:
+                            pos_copy['timestamp'] = datetime.now()
+                    positions_history.append(pos_copy)
+                
+                self.bot_data = {
+                    'cash_balance': state.get('cash_balance', 250.0),
+                    'position': state.get('position', 0),
+                    'entry_price': state.get('entry_price', 0),
+                    'positions_history': positions_history,
+                    'open_positions': state.get('open_positions', 0),
+                    'log_messages': state.get('log_messages', []),
+                    'tick_data': tick_data,
+                    'is_running': state.get('is_running', False),
+                    'total_profit': state.get('total_profit', 0)
+                }
+            else:
+                # Estado inicial
+                self.bot_data = {
+                    'cash_balance': 250.0,
+                    'position': 0,
+                    'entry_price': 0,
+                    'positions_history': [],
+                    'open_positions': 0,
+                    'log_messages': [],
+                    'tick_data': deque(maxlen=50),
+                    'is_running': False,
+                    'total_profit': 0
+                }
+        except Exception as e:
+            print(f"Error cargando estado: {e}")
+            # Estado inicial por defecto
+            self.bot_data = {
+                'cash_balance': 250.0,
+                'position': 0,
+                'entry_price': 0,
+                'positions_history': [],
+                'open_positions': 0,
+                'log_messages': [],
+                'tick_data': deque(maxlen=50),
+                'is_running': False,
+                'total_profit': 0
+            }
+    
     @property
     def cash_balance(self):
-        return self._state['cash_balance']
+        return self.bot_data['cash_balance']
     
     @cash_balance.setter
     def cash_balance(self, value):
-        self._state['cash_balance'] = value
-        self._auto_save()
-    
+        self.bot_data['cash_balance'] = value
+        self.save_state()
+        
     @property
     def position(self):
-        return self._state['position']
+        return self.bot_data['position']
     
     @position.setter
     def position(self, value):
-        self._state['position'] = value
-        self._auto_save()
-    
-    @property
-    def position_side(self):
-        return self._state['position_side']
-    
-    @position_side.setter
-    def position_side(self, value):
-        self._state['position_side'] = value
-        self._auto_save()
-    
+        self.bot_data['position'] = value
+        self.save_state()
+        
     @property
     def entry_price(self):
-        return self._state['entry_price']
+        return self.bot_data['entry_price']
     
     @entry_price.setter
     def entry_price(self, value):
-        self._state['entry_price'] = value
-        self._auto_save()
-    
+        self.bot_data['entry_price'] = value
+        self.save_state()
+        
     @property
     def positions_history(self):
-        return self._state['positions_history']
+        return self.bot_data['positions_history']
     
     @property
     def open_positions(self):
-        return self._state['open_positions']
+        return self.bot_data['open_positions']
     
     @open_positions.setter
     def open_positions(self, value):
-        self._state['open_positions'] = value
-        self._auto_save()
-    
+        self.bot_data['open_positions'] = value
+        self.save_state()
+        
     @property
     def log_messages(self):
-        return self._state['log_messages']
+        return self.bot_data['log_messages']
     
     @property
     def tick_data(self):
-        return deque(self._state['tick_data'], maxlen=100)
+        return self.bot_data['tick_data']
     
     @property
     def is_running(self):
-        return self._state['is_running']
+        return self.bot_data['is_running']
     
     @is_running.setter
     def is_running(self, value):
-        self._state['is_running'] = value
-        self._auto_save()
+        self.bot_data['is_running'] = value
+        self.save_state()
     
     @property
     def total_profit(self):
-        return self._state['total_profit']
+        return self.bot_data['total_profit']
     
     @total_profit.setter
     def total_profit(self, value):
-        self._state['total_profit'] = value
-        self._auto_save()
+        self.bot_data['total_profit'] = value
+        self.save_state()
 
     def log_message(self, message: str, level: str = "INFO"):
-        """Agregar mensaje al log con persistencia"""
+        """Agregar mensaje al log"""
         timestamp = datetime.now().strftime("%H:%M:%S")
         log_entry = f"[{timestamp}] {level}: {message}"
         self.log_messages.append(log_entry)
-        if len(self.log_messages) > 100:
+        if len(self.log_messages) > 50:
             self.log_messages.pop(0)
-        self._auto_save()
+        self.save_state()
 
-    # MANTENER TODAS LAS FUNCIONES ORIGINALES SIN CAMBIOS
-    def get_futures_price(self) -> dict:
-        """Obtener precio de FUTUROS MEXC"""
+    def get_real_price_from_api(self) -> dict:
+        """Obtener precio REAL de MEXC"""
         try:
             url = f"https://api.mexc.com/api/v3/ticker/price"
             params = {'symbol': self.symbol}
             
-            response = requests.get(url, params=params, timeout=5)
+            response = requests.get(url, params=params, timeout=10)
             
             if response.status_code == 200:
                 data = response.json()
                 if 'price' in data:
                     current_price = float(data['price'])
-                    spread = current_price * 0.00005
+                    spread = current_price * 0.0001
                     
                     return {
                         'timestamp': datetime.now(),
@@ -284,29 +242,58 @@ class MexcFuturesTradingBot:
                         'ask': current_price + spread,
                         'symbol': self.symbol,
                         'simulated': False,
-                        'source': 'MEXC Futures'
+                        'source': 'MEXC Real'
                     }
             
-            return self.get_backup_price()
+            return self.get_binance_price()
             
         except Exception as e:
-            self.log_message(f"Error obteniendo precio futuros: {e}", "ERROR")
-            return self.get_backup_price()
+            self.log_message(f"Error obteniendo precio real: {e}", "ERROR")
+            return self.get_binance_price()
 
-    def get_backup_price(self) -> dict:
-        """Precio de backup para futuros"""
+    def get_binance_price(self) -> dict:
+        """Obtener precio de Binance como backup"""
+        try:
+            url = "https://api.binance.com/api/v3/ticker/price"
+            params = {'symbol': self.symbol}
+            
+            response = requests.get(url, params=params, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if 'price' in data:
+                    current_price = float(data['price'])
+                    spread = current_price * 0.0001
+                    
+                    return {
+                        'timestamp': datetime.now(),
+                        'bid': current_price - spread,
+                        'ask': current_price + spread,
+                        'symbol': self.symbol,
+                        'simulated': False,
+                        'source': 'Binance Backup'
+                    }
+            
+            return self.get_realistic_price()
+            
+        except Exception as e:
+            self.log_message(f"Error obteniendo precio de Binance: {e}", "ERROR")
+            return self.get_realistic_price()
+
+    def get_realistic_price(self) -> dict:
+        """Generar precio realista"""
         base_prices = {
-            'BTCUSDT': 103000,
+            'BTCUSDT': 100000,
             'ETHUSDT': 3500,
             'ADAUSDT': 0.45,
             'DOTUSDT': 7.5,
             'LINKUSDT': 15.0
         }
         
-        base_price = base_prices.get(self.symbol, 103000)
-        variation = np.random.uniform(-0.01, 0.01)
+        base_price = base_prices.get(self.symbol, 50000)
+        variation = np.random.uniform(-0.02, 0.02)
         current_price = base_price * (1 + variation)
-        spread = current_price * 0.00005
+        spread = current_price * 0.0001
         
         return {
             'timestamp': datetime.now(),
@@ -314,43 +301,52 @@ class MexcFuturesTradingBot:
             'ask': current_price + spread,
             'symbol': self.symbol,
             'simulated': True,
-            'source': 'Futures Simulation'
+            'source': 'Realistic Simulation'
         }
 
+    def get_ticker_price(self) -> dict:
+        """Obtener precio actual"""
+        try:
+            real_data = self.get_real_price_from_api()
+            return real_data
+        except Exception as e:
+            self.log_message(f"Error crítico obteniendo precio: {e}", "ERROR")
+            return self.get_realistic_price()
+
     def calculate_indicators(self) -> dict:
-        """Calcular indicadores técnicos OPTIMIZADOS PARA HFT"""
-        if len(self._current_tick_data) < 10:
+        """Calcular indicadores técnicos OPTIMIZADOS"""
+        if len(self.tick_data) < 10:
             return {}
         
-        prices = [tick['bid'] for tick in list(self._current_tick_data)]
+        prices = [tick['bid'] for tick in self.tick_data]
         df = pd.DataFrame(prices, columns=['price'])
         
-        # Indicadores ULTRA RÁPIDOS para HFT
+        # Indicadores más agresivos
         df['returns'] = df['price'].pct_change()
-        df['momentum'] = df['returns'].rolling(2).mean()
-        df['sma_3'] = df['price'].rolling(3).mean()
-        df['sma_8'] = df['price'].rolling(8).mean()
-        df['price_deviation'] = (df['price'] - df['sma_3']) / df['sma_3']
-        df['volatility'] = df['returns'].rolling(5).std() * self.volatility_multiplier
+        df['momentum'] = df['returns'].rolling(3).mean()  # Ventana más corta
+        df['sma_5'] = df['price'].rolling(5).mean()
+        df['sma_10'] = df['price'].rolling(10).mean()
+        df['price_deviation'] = (df['price'] - df['sma_5']) / df['sma_5']
+        df['volatility'] = df['returns'].rolling(8).std() * self.volatility_multiplier
         
-        # RSI ultra rápido
+        # RSI más rápido
         delta = df['price'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=3).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=3).mean()
+        gain = (delta.where(delta > 0, 0)).rolling(window=5).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=5).mean()
         rs = gain / loss
         df['rsi'] = 100 - (100 / (1 + rs))
         
-        # MACD ultra rápido
-        exp8 = df['price'].ewm(span=3, adjust=False).mean()
-        exp16 = df['price'].ewm(span=6, adjust=False).mean()
-        df['macd'] = exp8 - exp16
-        df['macd_signal'] = df['macd'].ewm(span=2, adjust=False).mean()
+        # MACD más agresivo
+        exp12 = df['price'].ewm(span=5, adjust=False).mean()
+        exp26 = df['price'].ewm(span=8, adjust=False).mean()
+        df['macd'] = exp12 - exp26
+        df['macd_signal'] = df['macd'].ewm(span=3, adjust=False).mean()
         
-        # Bollinger Bands ajustadas
-        df['bb_middle'] = df['price'].rolling(8).mean()
-        df['bb_std'] = df['price'].rolling(8).std()
-        df['bb_upper'] = df['bb_middle'] + (df['bb_std'] * 1.2)
-        df['bb_lower'] = df['bb_middle'] - (df['bb_std'] * 1.2)
+        # Bollinger Bands para mejores entradas
+        df['bb_middle'] = df['price'].rolling(10).mean()
+        df['bb_std'] = df['price'].rolling(10).std()
+        df['bb_upper'] = df['bb_middle'] + (df['bb_std'] * 1.5)
+        df['bb_lower'] = df['bb_middle'] - (df['bb_std'] * 1.5)
         
         latest = df.iloc[-1]
         
@@ -358,8 +354,8 @@ class MexcFuturesTradingBot:
             'momentum': latest['momentum'],
             'price_deviation': latest['price_deviation'],
             'current_price': latest['price'],
-            'sma_3': latest['sma_3'],
-            'sma_8': latest['sma_8'],
+            'sma_5': latest['sma_5'],
+            'sma_10': latest['sma_10'],
             'rsi': latest['rsi'],
             'volatility': latest['volatility'],
             'macd': latest['macd'],
@@ -370,373 +366,315 @@ class MexcFuturesTradingBot:
         }
 
     def trading_strategy(self, indicators: dict) -> str:
-        """ESTRATEGIA ULTRA AGRESIVA - MÁXIMAS OPERACIONES"""
+        """Estrategia OPTIMIZADA para mayores ganancias"""
         if not indicators:
             return 'hold'
         
         momentum = indicators['momentum']
+        deviation = indicators['price_deviation']
         rsi = indicators['rsi']
+        volatility = indicators['volatility']
         macd = indicators['macd']
         macd_signal = indicators['macd_signal']
         current_price = indicators['current_price']
         bb_upper = indicators['bb_upper']
         bb_lower = indicators['bb_lower']
         
-        # ESTRATEGIA ULTRA AGRESIVA - MÁXIMAS ENTRADAS
+        # ?? MEJORA 1: Validar que RSI no sea NaN
+        if np.isnan(rsi):
+            return 'hold'
         
-        # SHORT ULTRA AGRESIVO
-        short_conditions = [
-            momentum > 0.0003,
-            rsi > 25,
-            current_price > bb_lower,
-            macd > macd_signal * 0.8,
+        # ESTRATEGIA MÁS AGRESIVA Y SELECTIVA
+        buy_conditions = [
+            momentum > self.momentum_threshold,      # Momentum fuerte
+            rsi < 60,                               # ?? MEJORA 2: De 45 a 60 (más flexible, evita RSI alto)
+            macd > macd_signal,                     # Tendencia alcista
+            current_price < bb_lower,               # Precio en zona de soporte
+            volatility < 0.02                       # Mercado estable
         ]
         
-        # LONG ULTRA AGRESIVO  
-        long_conditions = [
-            momentum < -0.0003,
-            rsi < 75,
-            current_price < bb_upper,
-            macd < macd_signal * 1.2,
+        sell_conditions = [
+            momentum < -self.momentum_threshold,     # Momentum bajista
+            rsi > 70,                               # Sobrecomprado
+            macd < macd_signal,                     # Tendencia bajista  
+            current_price > bb_upper,               # Precio en zona de resistencia
+            self.position > 0                       # Solo vender si tenemos posición
         ]
         
-        # GESTIÓN DE POSICIÓN ULTRA AGRESIVA
+        # TOMA DE GANANCIAS MÁS AGRESIVA
         if self.position > 0:
-            if self.position_side == 'long':
-                current_profit_pct = (current_price - self.entry_price) / self.entry_price
-                current_loss_pct = (self.entry_price - current_price) / self.entry_price
-            else:  # short
-                current_profit_pct = (self.entry_price - current_price) / self.entry_price
-                current_loss_pct = (current_price - self.entry_price) / self.entry_price
+            current_profit_pct = (current_price - self.entry_price) / self.entry_price
+            current_loss_pct = (self.entry_price - current_price) / self.entry_price
             
-            # TOMA DE GANANCIAS ULTRA RÁPIDA
+            # Tomar ganancias rápido
             if current_profit_pct >= self.min_profit_target:
-                self.log_message(f"?? GANANCIA TURBO: {current_profit_pct:.3%} (+)", "PROFIT")
-                return 'close'
+                self.log_message(f"?? TOMANDO GANANCIAS: {current_profit_pct:.3%} (+)", "PROFIT")
+                return 'sell'
             
-            # STOP LOSS PROTECTOR
+            # Stop loss protector
             if current_loss_pct >= self.max_loss_stop:
-                self.log_message(f"?? STOP LOSS TURBO: {current_loss_pct:.3%} (-)", "LOSS")
-                return 'close'
+                self.log_message(f"?? STOP LOSS: {current_loss_pct:.3%} (-)", "LOSS")
+                return 'sell'
         
-        # SEÑALES ULTRA AGRESIVAS - MÁXIMAS OPERACIONES
-        if sum(short_conditions) >= 2 and self.open_positions < self.max_positions:
-            self.log_message(f"? SEÑAL SHORT TURBO: momentum={momentum:.4f}, RSI={rsi:.1f}", "SIGNAL")
-            return 'sell'
-        elif sum(long_conditions) >= 2 and self.open_positions < self.max_positions:
-            self.log_message(f"? SEÑAL LONG TURBO: momentum={momentum:.4f}, RSI={rsi:.1f}", "SIGNAL")
+        # SEÑALES PRINCIPALES
+        if sum(buy_conditions) >= 4:  # Necesita 4 de 5 condiciones
+            self.log_message(f"? SEÑAL COMPRA FUERTE: momentum={momentum:.4f}, RSI={rsi:.1f}", "SIGNAL")
             return 'buy'
+        elif sum(sell_conditions) >= 3:  # Necesita 3 de 5 condiciones
+            self.log_message(f"?? SEÑAL VENTA: momentum={momentum:.4f}, RSI={rsi:.1f}", "SIGNAL")
+            return 'sell'
         
         return 'hold'
 
     def execute_trade(self, action: str, price: float):
-        """Ejecutar operación en FUTUROS - MODO TURBO"""
+        """Ejecutar operación - OPTIMIZADA PARA MAYORES GANANCIAS"""
         try:
             investment_amount = 0
             quantity = 0
-            quantity_to_close = 0
-            close_amount = 0
+            quantity_to_sell = 0
+            sale_amount = 0
             profit_loss = 0
             
-            if action in ['buy', 'sell'] and self.open_positions < self.max_positions:
-                # ABRIR POSICIÓN
-                investment_amount = self.cash_balance * self.position_size * self.leverage
-                quantity = investment_amount / price
-                
-                if investment_amount > self.cash_balance * self.leverage:
-                    self.log_message("? Margen insuficiente", "ERROR")
-                    return
-                
-                # Actualizar balances
-                self.cash_balance -= (investment_amount / self.leverage)
-                self.position += quantity
-                self.entry_price = price if self.position == quantity else ((self.entry_price * (self.position - quantity)) + (price * quantity)) / self.position
-                self.position_side = 'long' if action == 'buy' else 'short'
-                self.open_positions += 1
-                
-                side_emoji = "??" if action == 'buy' else "??"
-                trade_info = f"{side_emoji} TURBO {self.position_side.upper()}: {quantity:.6f} {self.symbol} @ ${price:.2f} | Margen: ${investment_amount/self.leverage:.2f} | Leverage: {self.leverage}x"
-                self.log_message(trade_info, "TRADE")
-                
-            elif action == 'close' and self.position > 0:
-                # CERRAR POSICIÓN
-                quantity_to_close = self.position
-                
-                if self.position_side == 'long':
-                    close_amount = quantity_to_close * price
-                    profit_loss = (close_amount - (self.position * self.entry_price)) * self.leverage
-                else:  # short
-                    close_amount = quantity_to_close * price
-                    profit_loss = ((self.position * self.entry_price) - close_amount) * self.leverage
+            if action == 'buy':
+                if self.open_positions < self.max_positions:
+                    # Inversión más grande (15% del balance)
+                    investment_amount = self.cash_balance * self.position_size
+                    quantity = investment_amount / price
+                    
+                    if investment_amount > self.cash_balance:
+                        self.log_message("? Fondos insuficientes", "ERROR")
+                        return
+                    
+                    # Actualizar balances
+                    self.cash_balance -= investment_amount
+                    self.position += quantity
+                    self.entry_price = price
+                    self.open_positions += 1
+                    
+                    trade_info = f"? COMPRA: {quantity:.6f} {self.symbol} @ ${price:.2f} | Inversión: ${investment_amount:.2f} | Cash: ${self.cash_balance:.2f}"
+                    self.log_message(trade_info, "TRADE")
+                    
+            elif action == 'sell' and self.position > 0:
+                # Vender toda la posición
+                quantity_to_sell = self.position
+                sale_amount = quantity_to_sell * price
+                profit_loss = sale_amount - (self.position * self.entry_price)
                 
                 # Actualizar balances
-                self.cash_balance += (self.position * self.entry_price / self.leverage) + profit_loss
+                self.cash_balance += sale_amount
                 self.position = 0
                 self.open_positions = 0
-                self.position_side = ''
                 self.total_profit += profit_loss
                 
                 profit_color = "??" if profit_loss > 0 else "??"
-                trade_info = f"{profit_color} CERRAR TURBO: {quantity_to_close:.6f} {self.symbol} @ ${price:.2f} | P/L: ${profit_loss:.4f} | Profit Total: ${self.total_profit:.2f}"
+                trade_info = f"{profit_color} VENTA: {quantity_to_sell:.6f} {self.symbol} @ ${price:.2f} | Monto: ${sale_amount:.2f} | P/L: ${profit_loss:.4f} | Profit Total: ${self.total_profit:.2f}"
                 self.log_message(trade_info, "TRADE")
             
             # Registrar posición
-            current_equity = self.cash_balance + (self.position * self.entry_price / self.leverage if self.position > 0 else 0)
+            current_equity = self.cash_balance + (self.position * price)
             self.positions_history.append({
                 'timestamp': datetime.now(),
                 'action': action,
-                'side': self.position_side if action != 'close' else '',
-                'leverage': self.leverage if action != 'close' else '',
                 'price': price,
-                'quantity': quantity_to_close if action == 'close' else quantity,
+                'quantity': quantity_to_sell if action == 'sell' else quantity,
+                'investment': investment_amount if action == 'buy' else sale_amount,
                 'cash_balance': self.cash_balance,
+                'position_value': self.position * price,
                 'total_equity': current_equity,
-                'profit_loss': profit_loss if action == 'close' else 0
+                'open_positions': self.open_positions,
+                'profit_loss': profit_loss if action == 'sell' else 0
             })
             
-            self._auto_save()
+            self.save_state()
             
         except Exception as e:
-            self.log_message(f"?? ERROR ejecutando trade: {e}", "ERROR")
+            self.log_message(f"? Error ejecutando trade: {e}", "ERROR")
 
     def close_all_positions(self):
         """Cerrar todas las posiciones abiertas"""
         if self.position > 0:
-            tick_data = self.get_futures_price()
-            price = tick_data['bid'] if self.position_side == 'long' else tick_data['ask']
-            self.execute_trade('close', price)
-            self.log_message("?? TODAS las posiciones cerradas - MODO SEGURIDAD", "INFO")
-        
-        # ========== SINCRONIZACIÓN AL CERRAR (AGREGAR) ==========
-        force_sync_position_state(self)
+            if self.tick_data:
+                tick_data = list(self.tick_data)[-1]
+            else:
+                tick_data = self.get_ticker_price()
+            price = tick_data['ask']
+            self.execute_trade('sell', price)
+            self.log_message("?? TODAS las posiciones cerradas", "INFO")
 
     def reset_account(self):
         """Reiniciar cuenta a estado inicial"""
-        self.cash_balance = 255.0
+        self.cash_balance = 250.0
         self.position = 0
-        self.position_side = ''
         self.entry_price = 0
         self.positions_history.clear()
         self.open_positions = 0
         self.log_messages.clear()
-        self._current_tick_data.clear()
-        self._state['tick_data'] = []
+        self.tick_data.clear()
         self.total_profit = 0
-        self.log_message("?? Cuenta reiniciada a $255.00 - MODO TURBO", "INFO")
-        self._auto_save()
+        self.log_message("?? Cuenta reiniciada a $250.00", "INFO")
+        self.save_state()
 
     def trading_cycle(self):
-        """Ciclo principal de trading HFT ULTRA RÁPIDO"""
-        self.log_message("?? INICIANDO MODO TURBO HFT - PERSISTENCIA ACTIVA")
-        
-        consecutive_errors = 0
-        max_consecutive_errors = 5
+        """Ciclo principal de trading"""
+        self.log_message("?? Iniciando ciclo de trading HFT ULTRA-RÁPIDO - MÁS OPERACIONES")
         
         while self.is_running:
             try:
-                tick_data = self.get_futures_price()
+                tick_data = self.get_ticker_price()
                 if tick_data:
-                    self._current_tick_data.append(tick_data)
-                    # Auto-guardar cada 10 ticks
-                    if len(self._current_tick_data) % 10 == 0:
-                        self._auto_save()
+                    self.tick_data.append(tick_data)
                 
                 indicators = self.calculate_indicators()
                 
-                if indicators and len(self._current_tick_data) >= 10:
+                if indicators and len(self.tick_data) >= 10:
                     signal = self.trading_strategy(indicators)
                     if signal != 'hold':
-                        price = tick_data['ask'] if signal == 'buy' else tick_data['bid']
+                        price = tick_data['bid'] if signal == 'buy' else tick_data['ask']
                         self.execute_trade(signal, price)
                 
-                consecutive_errors = 0
-                time.sleep(0.3)
+                time.sleep(2)
                 
             except Exception as e:
-                consecutive_errors += 1
-                self.log_message(f"?? ERROR en ciclo #{consecutive_errors}: {e}", "ERROR")
-                
-                if consecutive_errors >= max_consecutive_errors:
-                    self.log_message("?? DEMASIADOS ERRORES - Cerrando todas las posiciones", "CRITICAL")
-                    self.close_all_positions()
-                    self.is_running = False
-                    break
-                
+                self.log_message(f"? Error en ciclo de trading: {e}", "ERROR")
                 time.sleep(5)
-                continue
 
     def start_trading(self):
-        """Iniciar bot de trading HFT"""
+        """Iniciar bot de trading"""
         if not self.is_running:
-            # ========== SINCRONIZACIÓN AL INICIAR (AGREGAR) ==========
-            force_sync_position_state(self)
-            
             self.is_running = True
-            self._running = True
             self.trading_thread = threading.Thread(target=self.trading_cycle, daemon=True)
             self.trading_thread.start()
-            self.log_message("? MODO TURBO ACTIVADO - PERSISTENCIA GARANTIZADA", "SYSTEM")
+            self.log_message("?? Bot de trading ULTRA-RÁPIDO iniciado - MÁS OPERACIONES")
 
     def stop_trading(self):
         """Detener bot de trading"""
         self.is_running = False
-        self._running = False
-        self.log_message("?? MODO TURBO DETENIDO", "SYSTEM")
-        # Guardar estado final
-        self._auto_save()
-        
-        # ========== SINCRONIZACIÓN AL DETENER (AGREGAR) ==========
-        force_sync_position_state(self)
+        self.log_message("?? Bot de trading detenido")
 
     def get_performance_stats(self):
         """Obtener estadísticas de performance"""
-        current_data = list(self._current_tick_data) if self._current_tick_data else []
-        current_price = current_data[-1]['bid'] if current_data else 0
-        
-        # Calcular equity considerando posición abierta
-        if self.position > 0:
-            if self.position_side == 'long':
-                position_value = self.position * current_price
-                unrealized_pl = (position_value - (self.position * self.entry_price)) * self.leverage
-            else:  # short
-                position_value = self.position * current_price
-                unrealized_pl = ((self.position * self.entry_price) - position_value) * self.leverage
-            
-            total_equity = self.cash_balance + unrealized_pl
-        else:
-            total_equity = self.cash_balance
-        
-        total_profit = total_equity - 255.0
+        current_price = list(self.tick_data)[-1]['bid'] if self.tick_data else 0
+        position_value = self.position * current_price
+        total_equity = self.cash_balance + position_value
+        total_profit = total_equity - 250.0
         
         stats = {
-            'total_trades': len([p for p in self.positions_history if p['action'] in ['buy', 'sell']]),
+            'total_trades': len(self.positions_history),
             'win_rate': 0,
             'cash_balance': self.cash_balance,
+            'position_value': position_value,
             'total_equity': total_equity,
             'open_positions': self.open_positions,
             'current_price': current_price,
             'total_profit': total_profit,
             'position_size': self.position,
-            'position_side': self.position_side,
-            'realized_profit': self.total_profit,
-            'leverage': self.leverage
+            'realized_profit': self.total_profit
         }
         
         if not self.positions_history:
             return stats
         
         # Calcular win rate
-        close_trades = [t for t in self.positions_history if t['action'] == 'close']
+        sell_trades = [t for t in self.positions_history if t['action'] == 'sell']
         
-        if close_trades:
-            profitable_trades = len([t for t in close_trades if t.get('profit_loss', 0) > 0])
-            stats['win_rate'] = (profitable_trades / len(close_trades)) * 100 if close_trades else 0
+        if sell_trades:
+            profitable_trades = 0
+            for trade in self.positions_history:
+                if trade['action'] == 'sell' and trade.get('profit_loss', 0) > 0:
+                    profitable_trades += 1
+            
+            stats['win_rate'] = (profitable_trades / len(sell_trades)) * 100 if sell_trades else 0
         
         return stats
 
-# INTERFAZ STREAMLIT (MANTENER IGUAL)
 def main():
-    st.title("?? Bot HFT Futuros MEXC - PERSISTENCIA TOTAL ?")
-    st.markdown("**CAPITAL INICIAL: $255.00 | APALANCAMIENTO: 3x | PERSISTENCIA ACTIVA**")
+    st.title("?? Bot HFT MEXC - ESTRATEGIA ULTRA-RÁPIDA ??")
     st.markdown("---")
     
     # Inicializar el bot
     if 'bot' not in st.session_state:
-        st.session_state.bot = MexcFuturesTradingBot("", "", "BTCUSDT")
+        st.session_state.bot = MexcHighFrequencyTradingBot("", "", "BTCUSDT")
     
     bot = st.session_state.bot
     
-    # Sidebar (igual que antes)
+    # Sidebar
     with st.sidebar:
-        st.header("?? Configuración Turbo")
+        st.header("?? Configuración")
         
         api_key = st.text_input("API Key MEXC", type="password")
         secret_key = st.text_input("Secret Key MEXC", type="password")
-        symbol = st.selectbox("Símbolo Futuros", ["BTCUSDT", "ETHUSDT", "ADAUSDT", "DOTUSDT", "LINKUSDT"])
+        symbol = st.selectbox("Símbolo", ["BTCUSDT", "ETHUSDT", "ADAUSDT", "DOTUSDT", "LINKUSDT"])
         
         bot.api_key = api_key
         bot.secret_key = secret_key
         bot.symbol = symbol
         
         st.markdown("---")
-        st.header("?? Control Turbo")
+        st.header("?? Control del Bot")
         
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("?? Activar Turbo", use_container_width=True, type="primary"):
+            if st.button("?? Iniciar Bot", use_container_width=True):
                 bot.start_trading()
                 st.rerun()
         
         with col2:
-            if st.button("?? Desactivar Turbo", use_container_width=True):
+            if st.button("?? Detener Bot", use_container_width=True):
                 bot.stop_trading()
                 st.rerun()
         
-        if st.button("?? Cerrar Posiciones", use_container_width=True):
+        if st.button("?? Cerrar Todas las Posiciones", use_container_width=True):
             bot.close_all_positions()
             st.rerun()
             
-        if st.button("?? Reiniciar $255", use_container_width=True):
+        if st.button("?? Reiniciar Cuenta", use_container_width=True):
             bot.reset_account()
             st.rerun()
         
         st.markdown("---")
-        st.header("?? Configuración Turbo")
+        st.header("?? Estadísticas Clave")
         st.info(f"**Tamaño posición:** {bot.position_size*100}%")
         st.info(f"**Target ganancia:** {bot.min_profit_target*100}%")
         st.info(f"**Stop loss:** {bot.max_loss_stop*100}%")
-        st.info(f"**Apalancamiento:** {bot.leverage}x")
-        st.info(f"**Operaciones máx:** {bot.max_positions}")
+        st.info(f"**Posiciones máx:** {bot.max_positions}")
         
-        # ========== INDICADOR VISUAL MÍNIMO (AGREGAR) ==========
-        st.markdown("---")
         if bot.is_running:
-            st.markdown("""
-            <div style="background-color: #00ff00; padding: 10px; border-radius: 5px; text-align: center;">
-                <h3>🟢 BOT ACTIVO</h3>
-                <p>Ejecutando operaciones</p>
-            </div>
-            """, unsafe_allow_html=True)
+            st.success("? Bot Ejecutándose - ESTRATEGIA ULTRA-RÁPIDA")
         else:
-            st.markdown("""
-            <div style="background-color: #ff4444; padding: 10px; border-radius: 5px; text-align: center;">
-                <h3>🔴 BOT DETENIDO</h3>
-                <p>No ejecuta operaciones</p>
-            </div>
-            """, unsafe_allow_html=True)
+            st.warning("?? Bot Detenido")
             
-        if bot._current_tick_data:
-            latest_tick = list(bot._current_tick_data)[-1]
+        if bot.tick_data:
+            latest_tick = list(bot.tick_data)[-1]
             source = latest_tick.get('source', 'Unknown')
             st.info(f"**Fuente:** {source}")
 
-    # Layout principal (igual que antes)
+    # Layout principal
     col1, col2, col3, col4 = st.columns(4)
     
     stats = bot.get_performance_stats()
     
     with col1:
         st.metric(
-            label="?? Margen Disponible",
+            label="?? Cash Disponible",
             value=f"${stats['cash_balance']:.2f}",
             delta=f"${stats['realized_profit']:.2f}" if stats['realized_profit'] != 0 else None
         )
     
     with col2:
         st.metric(
-            label="?? Precio Futuros",
+            label="?? Precio Actual",
             value=f"${stats['current_price']:.2f}"
         )
     
     with col3:
         st.metric(
-            label="?? Tasa Acierto",
+            label="?? Tasa de Acierto",
             value=f"{stats['win_rate']:.1f}%"
         )
     
     with col4:
         st.metric(
-            label="?? Operaciones",
+            label="?? Total Operaciones",
             value=f"{stats['total_trades']}"
         )
     
@@ -744,15 +682,14 @@ def main():
     col5, col6, col7, col8 = st.columns(4)
     
     with col5:
-        position_status = f"{stats['position_side'].upper()}" if stats['position_side'] else "SIN POSICIÓN"
         st.metric(
-            label="?? Posición Actual",
-            value=position_status
+            label="?? Posiciones Abiertas",
+            value=f"{stats['open_positions']}"
         )
     
     with col6:
         st.metric(
-            label="?? Tamaño Pos",
+            label="?? Tamaño Posición",
             value=f"{stats['position_size']:.6f}"
         )
     
@@ -763,23 +700,23 @@ def main():
         )
     
     with col8:
-        leverage_info = f"{stats['leverage']}x" if stats['position_side'] else "---"
+        status = "?? LIVE" if bot.is_running else "?? STOP"
         st.metric(
-            label="? Apalancamiento",
-            value=leverage_info
+            label="?? Estado",
+            value=status
         )
     
     st.markdown("---")
     
     # Gráficos y datos
-    tab1, tab2, tab3 = st.tabs(["?? Precios Futuros", "?? Operaciones Turbo", "?? Logs del Sistema"])
+    tab1, tab2, tab3 = st.tabs(["?? Gráfico de Precios", "?? Historial de Operaciones", "?? Logs del Sistema"])
     
     with tab1:
-        current_data = list(bot._current_tick_data) if bot._current_tick_data else []
-        if current_data:
-            prices = [tick['bid'] for tick in current_data]
-            timestamps = [tick['timestamp'] for tick in current_data]
+        if bot.tick_data:
+            prices = [tick['bid'] for tick in list(bot.tick_data)]
+            timestamps = [tick['timestamp'] for tick in list(bot.tick_data)]
             
+            # Asegurarse de que los timestamps sean datetime
             valid_timestamps = []
             valid_prices = []
             for ts, price in zip(timestamps, prices):
@@ -797,17 +734,19 @@ def main():
                     line=dict(color='#00ff88', width=2)
                 ))
                 
-                # Mostrar posición actual si existe
-                if bot.position > 0 and bot.entry_price > 0:
-                    fig.add_hline(
-                        y=bot.entry_price, 
-                        line_dash="dash", 
-                        line_color="yellow",
-                        annotation_text=f"Entrada: ${bot.entry_price:.2f}"
-                    )
+                if len(valid_prices) >= 10:
+                    df = pd.DataFrame({'price': valid_prices})
+                    df['sma_10'] = df['price'].rolling(10).mean()
+                    fig.add_trace(go.Scatter(
+                        x=valid_timestamps[9:],
+                        y=df['sma_10'].dropna(),
+                        mode='lines',
+                        name='SMA 10',
+                        line=dict(color='#ffaa00', width=1, dash='dash')
+                    ))
                 
                 fig.update_layout(
-                    title=f"Precio Futuros {bot.symbol} - MODO TURBO",
+                    title=f"Precio de {bot.symbol} en Tiempo Real",
                     xaxis_title="Tiempo",
                     yaxis_title="Precio (USD)",
                     template="plotly_dark",
@@ -818,41 +757,39 @@ def main():
             else:
                 st.info("No hay datos válidos para graficar")
         else:
-            st.info("Esperando datos de futuros...")
+            st.info("Esperando datos de mercado...")
     
     with tab2:
         if bot.positions_history:
-            # Crear DataFrame para futuros
+            # Crear DataFrame seguro
             display_data = []
             for pos in bot.positions_history:
                 row = {
                     'timestamp': pos['timestamp'].strftime('%H:%M:%S') if isinstance(pos['timestamp'], datetime) else str(pos['timestamp']),
                     'action': pos['action'],
-                    'side': pos.get('side', ''),
-                    'leverage': pos.get('leverage', ''),
                     'price': f"${pos['price']:.2f}",
                     'quantity': f"{pos['quantity']:.6f}",
                     'cash_balance': f"${pos['cash_balance']:.2f}",
                     'total_equity': f"${pos['total_equity']:.2f}",
-                    'profit_loss': f"${pos.get('profit_loss', 0):.4f}"
+                    'open_positions': pos['open_positions']
                 }
                 display_data.append(row)
             
             df = pd.DataFrame(display_data)
             st.dataframe(df, use_container_width=True, height=400)
         else:
-            st.info("No hay operaciones turbo registradas aún.")
+            st.info("No hay operaciones registradas aún.")
     
     with tab3:
         log_container = st.container(height=400)
         with log_container:
-            for log_entry in reversed(bot.log_messages[-30:]):
-                if "ERROR" in log_entry or "CRITICAL" in log_entry:
+            for log_entry in reversed(bot.log_messages[-20:]):
+                if "ERROR" in log_entry:
                     st.error(log_entry)
                 elif "TRADE" in log_entry:
-                    if "ABRIR" in log_entry:
+                    if "COMPRA" in log_entry:
                         st.success(log_entry)
-                    elif "CERRAR" in log_entry:
+                    elif "VENTA" in log_entry:
                         if "??" in log_entry:
                             st.error(log_entry)
                         else:
@@ -861,14 +798,12 @@ def main():
                         st.info(log_entry)
                 elif "SEÑAL" in log_entry or "PROFIT" in log_entry or "LOSS" in log_entry:
                     st.warning(log_entry)
-                elif "SYSTEM" in log_entry:
-                    st.info(log_entry)
                 else:
                     st.info(log_entry)
     
     # Auto-refresh
     if bot.is_running:
-        time.sleep(2)
+        time.sleep(5)
         st.rerun()
 
 if __name__ == "__main__":
