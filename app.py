@@ -1,810 +1,490 @@
+# app.py
 import streamlit as st
-import time
+import asyncio
 import threading
-from collections import deque
-from datetime import datetime
+import time
 import pandas as pd
 import numpy as np
-import hmac
-import hashlib
-import requests
+from datetime import datetime
 import json
-import plotly.graph_objects as go
 import os
+from typing import Dict, List, Optional
+import requests
 
-# Configurar la página de Streamlit
-st.set_page_config(
-    page_title="?? Bot HFT MEXC",
-    page_icon="??",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-class MexcHighFrequencyTradingBot:
-    def __init__(self, api_key: str, secret_key: str, symbol: str = 'BTCUSDT'):
-        self.api_key = api_key
-        self.secret_key = secret_key
-        self.symbol = symbol
-        self.base_url = 'https://api.mexc.com'
-        
-        # Cargar estado desde archivo o inicializar
-        self.load_state()
-        
-        # Configuración HFT ULTRA-RÁPIDO - MÁS OPERACIONES
-        self.position_size = 0.15       # MODIFICADO: 15% por operación
-        self.max_positions = 1          # MODIFICADO: SOLO 1 posición máxima
-        self.momentum_threshold = 0.001 # MODIFICADO: 0.1% para señales más sensibles
-        self.mean_reversion_threshold = 0.0015  # MODIFICADO: Más sensible
-        self.volatility_multiplier = 1.8        # MODIFICADO: Más tolerante a volatilidad
-        self.min_profit_target = 0.003  # MODIFICADO: 0.3% de ganancia mínima
-        self.max_loss_stop = 0.002      # MODIFICADO: 0.2% de stop loss
-        
-        self.trading_thread = None
-        
-    def save_state(self):
-        """Guardar estado en archivo JSON"""
+# Clase MEXC API proporcionada
+class MEXCAPI:
+    def __init__(self):
+        self.base_url = "https://api.mexc.com/api/v3"
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
+    
+    def obtener_datos_mercado(self, symbol, interval='5m', limit=100):
         try:
-            state = {
-                'cash_balance': self.cash_balance,
-                'position': self.position,
-                'entry_price': self.entry_price,
-                'positions_history': [],
-                'open_positions': self.open_positions,
-                'log_messages': self.log_messages,
-                'tick_data': [],
-                'is_running': self.is_running,
-                'total_profit': self.total_profit
+            url = f"{self.base_url}/klines"
+            params = {
+                'symbol': symbol,
+                'interval': interval,
+                'limit': limit
             }
             
-            # Convertir positions_history
-            for pos in self.positions_history:
-                pos_copy = pos.copy()
-                pos_copy['timestamp'] = pos['timestamp'].isoformat() if isinstance(pos['timestamp'], datetime) else str(pos['timestamp'])
-                state['positions_history'].append(pos_copy)
+            response = self.session.get(url, params=params, timeout=10)
             
-            # Convertir tick_data
-            for tick in list(self.tick_data):
-                tick_copy = tick.copy()
-                tick_copy['timestamp'] = tick['timestamp'].isoformat() if isinstance(tick['timestamp'], datetime) else str(tick['timestamp'])
-                state['tick_data'].append(tick_copy)
-                    
-            with open('bot_state.json', 'w') as f:
-                json.dump(state, f, default=str, indent=2)
-        except Exception as e:
-            print(f"Error guardando estado: {e}")
-    
-    def load_state(self):
-        """Cargar estado desde archivo JSON"""
-        try:
-            if os.path.exists('bot_state.json'):
-                with open('bot_state.json', 'r') as f:
-                    state = json.load(f)
+            if response.status_code == 200:
+                data = response.json()
                 
-                # Convertir deque de tick_data
-                tick_data = deque(maxlen=50)
-                for tick in state.get('tick_data', []):
-                    tick_copy = tick.copy()
-                    if 'timestamp' in tick:
-                        try:
-                            if 'T' in tick['timestamp']:
-                                tick_copy['timestamp'] = datetime.fromisoformat(tick['timestamp'].replace('Z', '+00:00'))
-                            else:
-                                tick_copy['timestamp'] = datetime.now()
-                        except:
-                            tick_copy['timestamp'] = datetime.now()
-                    tick_data.append(tick_copy)
+                # Convertir a DataFrame
+                df = pd.DataFrame(data, columns=[
+                    'timestamp', 'open', 'high', 'low', 'close', 'volume',
+                    'close_time', 'quote_asset_volume', 'number_of_trades',
+                    'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
+                ])
                 
-                # Convertir timestamps en positions_history
-                positions_history = []
-                for pos in state.get('positions_history', []):
-                    pos_copy = pos.copy()
-                    if 'timestamp' in pos:
-                        try:
-                            if 'T' in pos['timestamp']:
-                                pos_copy['timestamp'] = datetime.fromisoformat(pos['timestamp'].replace('Z', '+00:00'))
-                            else:
-                                pos_copy['timestamp'] = datetime.now()
-                        except:
-                            pos_copy['timestamp'] = datetime.now()
-                    positions_history.append(pos_copy)
+                # Convertir tipos de datos
+                numeric_columns = ['open', 'high', 'low', 'close', 'volume']
+                for col in numeric_columns:
+                    df[col] = pd.to_numeric(df[col])
                 
-                self.bot_data = {
-                    'cash_balance': state.get('cash_balance', 250.0),
-                    'position': state.get('position', 0),
-                    'entry_price': state.get('entry_price', 0),
-                    'positions_history': positions_history,
-                    'open_positions': state.get('open_positions', 0),
-                    'log_messages': state.get('log_messages', []),
-                    'tick_data': tick_data,
-                    'is_running': state.get('is_running', False),
-                    'total_profit': state.get('total_profit', 0)
-                }
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                
+                return df
             else:
-                # Estado inicial
-                self.bot_data = {
-                    'cash_balance': 250.0,
-                    'position': 0,
-                    'entry_price': 0,
-                    'positions_history': [],
-                    'open_positions': 0,
-                    'log_messages': [],
-                    'tick_data': deque(maxlen=50),
-                    'is_running': False,
-                    'total_profit': 0
-                }
+                print(f"Error API MEXC: {response.status_code}")
+                return None
+                
         except Exception as e:
-            print(f"Error cargando estado: {e}")
-            # Estado inicial por defecto
-            self.bot_data = {
-                'cash_balance': 250.0,
-                'position': 0,
-                'entry_price': 0,
-                'positions_history': [],
-                'open_positions': 0,
-                'log_messages': [],
-                'tick_data': deque(maxlen=50),
-                'is_running': False,
-                'total_profit': 0
+            print(f"Error conectando con MEXC: {e}")
+            return None
+    
+    def obtener_precio_actual(self, symbol):
+        try:
+            url = f"{self.base_url}/ticker/price"
+            params = {'symbol': symbol}
+            
+            response = self.session.get(url, params=params, timeout=5)
+            
+            if response.status_code == 200:
+                data = response.json()
+                return float(data['price'])
+            else:
+                return None
+                
+        except Exception as e:
+            print(f"Error obteniendo precio: {e}")
+            return None
+
+    def obtener_estado_servidor(self):
+        try:
+            url = f"{self.base_url}/ping"
+            response = self.session.get(url, timeout=5)
+            return response.status_code == 200
+        except:
+            return False
+
+class MEXCMarketMaker:
+    def __init__(self):
+        self.initial_balance = 255.0
+        self.available_balance = self.initial_balance
+        self.positions = {}
+        self.active = False
+        self.leverage_range = (10, 20)
+        self.mexc_api = MEXCAPI()
+        
+        # Símbolos de MEXC para perpetuals (ejemplo - verificar en documentación)
+        self.coins = {
+            'BTC': 'BTCUSDT',
+            'ETH': 'ETHUSDT', 
+            'SOL': 'SOLUSDT',
+            'XRP': 'XRPUSDT',
+            'DOGE': 'DOGEUSDT',
+            'BNB': 'BNBUSDT'
+        }
+        
+        self.data_file = "mexc_trading_data.json"
+        self.load_data()
+        
+        # Estadísticas de trading
+        self.stats = {
+            'total_trades': 0,
+            'winning_trades': 0,
+            'losing_trades': 0,
+            'total_pnl': 0.0
+        }
+        
+    def load_data(self):
+        """Cargar datos persistentes"""
+        try:
+            if os.path.exists(self.data_file):
+                with open(self.data_file, 'r') as f:
+                    data = json.load(f)
+                    self.available_balance = data.get('balance', self.initial_balance)
+                    self.positions = data.get('positions', {})
+                    self.stats = data.get('stats', self.stats)
+        except Exception as e:
+            st.warning(f"Error cargando datos: {e}")
+
+    def save_data(self):
+        """Guardar datos persistentes"""
+        try:
+            data = {
+                'balance': self.available_balance,
+                'positions': self.positions,
+                'stats': self.stats,
+                'last_update': datetime.now().isoformat()
             }
-    
-    @property
-    def cash_balance(self):
-        return self.bot_data['cash_balance']
-    
-    @cash_balance.setter
-    def cash_balance(self, value):
-        self.bot_data['cash_balance'] = value
-        self.save_state()
-        
-    @property
-    def position(self):
-        return self.bot_data['position']
-    
-    @position.setter
-    def position(self, value):
-        self.bot_data['position'] = value
-        self.save_state()
-        
-    @property
-    def entry_price(self):
-        return self.bot_data['entry_price']
-    
-    @entry_price.setter
-    def entry_price(self, value):
-        self.bot_data['entry_price'] = value
-        self.save_state()
-        
-    @property
-    def positions_history(self):
-        return self.bot_data['positions_history']
-    
-    @property
-    def open_positions(self):
-        return self.bot_data['open_positions']
-    
-    @open_positions.setter
-    def open_positions(self, value):
-        self.bot_data['open_positions'] = value
-        self.save_state()
-        
-    @property
-    def log_messages(self):
-        return self.bot_data['log_messages']
-    
-    @property
-    def tick_data(self):
-        return self.bot_data['tick_data']
-    
-    @property
-    def is_running(self):
-        return self.bot_data['is_running']
-    
-    @is_running.setter
-    def is_running(self, value):
-        self.bot_data['is_running'] = value
-        self.save_state()
-    
-    @property
-    def total_profit(self):
-        return self.bot_data['total_profit']
-    
-    @total_profit.setter
-    def total_profit(self, value):
-        self.bot_data['total_profit'] = value
-        self.save_state()
-
-    def log_message(self, message: str, level: str = "INFO"):
-        """Agregar mensaje al log"""
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        log_entry = f"[{timestamp}] {level}: {message}"
-        self.log_messages.append(log_entry)
-        if len(self.log_messages) > 50:
-            self.log_messages.pop(0)
-        self.save_state()
-
-    def get_real_price_from_api(self) -> dict:
-        """Obtener precio REAL de MEXC"""
-        try:
-            url = f"https://api.mexc.com/api/v3/ticker/price"
-            params = {'symbol': self.symbol}
-            
-            response = requests.get(url, params=params, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                if 'price' in data:
-                    current_price = float(data['price'])
-                    spread = current_price * 0.0001
-                    
-                    return {
-                        'timestamp': datetime.now(),
-                        'bid': current_price - spread,
-                        'ask': current_price + spread,
-                        'symbol': self.symbol,
-                        'simulated': False,
-                        'source': 'MEXC Real'
-                    }
-            
-            return self.get_binance_price()
-            
+            with open(self.data_file, 'w') as f:
+                json.dump(data, f)
         except Exception as e:
-            self.log_message(f"Error obteniendo precio real: {e}", "ERROR")
-            return self.get_binance_price()
+            st.error(f"Error guardando datos: {e}")
 
-    def get_binance_price(self) -> dict:
-        """Obtener precio de Binance como backup"""
-        try:
-            url = "https://api.binance.com/api/v3/ticker/price"
-            params = {'symbol': self.symbol}
-            
-            response = requests.get(url, params=params, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                if 'price' in data:
-                    current_price = float(data['price'])
-                    spread = current_price * 0.0001
-                    
-                    return {
-                        'timestamp': datetime.now(),
-                        'bid': current_price - spread,
-                        'ask': current_price + spread,
-                        'symbol': self.symbol,
-                        'simulated': False,
-                        'source': 'Binance Backup'
-                    }
-            
-            return self.get_realistic_price()
-            
-        except Exception as e:
-            self.log_message(f"Error obteniendo precio de Binance: {e}", "ERROR")
-            return self.get_realistic_price()
-
-    def get_realistic_price(self) -> dict:
-        """Generar precio realista"""
-        base_prices = {
-            'BTCUSDT': 100000,
-            'ETHUSDT': 3500,
-            'ADAUSDT': 0.45,
-            'DOTUSDT': 7.5,
-            'LINKUSDT': 15.0
-        }
+    def get_real_time_price(self, coin: str) -> float:
+        """Obtener precio real desde MEXC"""
+        symbol = self.coins[coin]
+        price = self.mexc_api.obtener_precio_actual(symbol)
         
-        base_price = base_prices.get(self.symbol, 50000)
-        variation = np.random.uniform(-0.02, 0.02)
-        current_price = base_price * (1 + variation)
-        spread = current_price * 0.0001
+        if price is None:
+            # Fallback a precios simulados si la API falla
+            base_prices = {
+                'BTC': 45000.0, 'ETH': 2500.0, 'SOL': 100.0,
+                'XRP': 0.60, 'DOGE': 0.08, 'BNB': 300.0
+            }
+            volatility = np.random.uniform(-0.002, 0.002)
+            price = base_prices[coin] * (1 + volatility)
+            st.warning(f"Usando precio simulado para {coin}")
+        
+        return price
+
+    def get_market_data(self, coin: str) -> Optional[pd.DataFrame]:
+        """Obtener datos de mercado desde MEXC"""
+        symbol = self.coins[coin]
+        return self.mexc_api.obtener_datos_mercado(symbol, interval='5m', limit=50)
+
+    def calculate_position_size(self, coin: str, price: float) -> tuple:
+        """Calcular tamaño de posición basado en el balance disponible"""
+        max_position_value = self.available_balance * 0.15  # 15% por moneda
+        leverage = np.random.randint(self.leverage_range[0], self.leverage_range[1] + 1)
+        notional = min(max_position_value * leverage, self.available_balance * 0.8)
+        size = notional / price
+            
+        return size, notional, leverage
+
+    def generate_market_signals(self, coin: str) -> dict:
+        """Generar señales de market making con datos reales de MEXC"""
+        current_price = self.get_real_time_price(coin)
+        market_data = self.get_market_data(coin)
+        
+        # Calcular spread basado en volatilidad reciente
+        if market_data is not None and len(market_data) > 0:
+            recent_high = market_data['high'].max()
+            recent_low = market_data['low'].min()
+            volatility = (recent_high - recent_low) / recent_low
+            base_spread = max(0.001, min(0.01, volatility * 0.5))
+        else:
+            base_spread = np.random.uniform(0.001, 0.005)
+        
+        spread = base_spread
+        bid_price = current_price * (1 - spread/2)
+        ask_price = current_price * (1 + spread/2)
         
         return {
-            'timestamp': datetime.now(),
-            'bid': current_price - spread,
-            'ask': current_price + spread,
-            'symbol': self.symbol,
-            'simulated': True,
-            'source': 'Realistic Simulation'
+            'bid_price': bid_price,
+            'ask_price': ask_price,
+            'mid_price': current_price,
+            'spread': spread,
+            'timestamp': datetime.now()
         }
 
-    def get_ticker_price(self) -> dict:
-        """Obtener precio actual"""
-        try:
-            real_data = self.get_real_price_from_api()
-            return real_data
-        except Exception as e:
-            self.log_message(f"Error crítico obteniendo precio: {e}", "ERROR")
-            return self.get_realistic_price()
-
-    def calculate_indicators(self) -> dict:
-        """Calcular indicadores técnicos OPTIMIZADOS"""
-        if len(self.tick_data) < 10:
-            return {}
+    def calculate_stop_loss(self, entry_price: float, side: str) -> float:
+        """Calcular stop loss dinámico basado en volatilidad"""
+        stop_percent = 0.015  # 1.5% base
         
-        prices = [tick['bid'] for tick in self.tick_data]
-        df = pd.DataFrame(prices, columns=['price'])
-        
-        # Indicadores más agresivos
-        df['returns'] = df['price'].pct_change()
-        df['momentum'] = df['returns'].rolling(3).mean()  # Ventana más corta
-        df['sma_5'] = df['price'].rolling(5).mean()
-        df['sma_10'] = df['price'].rolling(10).mean()
-        df['price_deviation'] = (df['price'] - df['sma_5']) / df['sma_5']
-        df['volatility'] = df['returns'].rolling(8).std() * self.volatility_multiplier
-        
-        # RSI más rápido
-        delta = df['price'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=5).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=5).mean()
-        rs = gain / loss
-        df['rsi'] = 100 - (100 / (1 + rs))
-        
-        # MACD más agresivo
-        exp12 = df['price'].ewm(span=5, adjust=False).mean()
-        exp26 = df['price'].ewm(span=8, adjust=False).mean()
-        df['macd'] = exp12 - exp26
-        df['macd_signal'] = df['macd'].ewm(span=3, adjust=False).mean()
-        
-        # Bollinger Bands para mejores entradas
-        df['bb_middle'] = df['price'].rolling(10).mean()
-        df['bb_std'] = df['price'].rolling(10).std()
-        df['bb_upper'] = df['bb_middle'] + (df['bb_std'] * 1.5)
-        df['bb_lower'] = df['bb_middle'] - (df['bb_std'] * 1.5)
-        
-        latest = df.iloc[-1]
-        
-        return {
-            'momentum': latest['momentum'],
-            'price_deviation': latest['price_deviation'],
-            'current_price': latest['price'],
-            'sma_5': latest['sma_5'],
-            'sma_10': latest['sma_10'],
-            'rsi': latest['rsi'],
-            'volatility': latest['volatility'],
-            'macd': latest['macd'],
-            'macd_signal': latest['macd_signal'],
-            'bb_upper': latest['bb_upper'],
-            'bb_lower': latest['bb_lower'],
-            'bb_middle': latest['bb_middle']
-        }
-
-    def trading_strategy(self, indicators: dict) -> str:
-        """Estrategia OPTIMIZADA para mayores ganancias"""
-        if not indicators:
-            return 'hold'
-        
-        momentum = indicators['momentum']
-        deviation = indicators['price_deviation']
-        rsi = indicators['rsi']
-        volatility = indicators['volatility']
-        macd = indicators['macd']
-        macd_signal = indicators['macd_signal']
-        current_price = indicators['current_price']
-        bb_upper = indicators['bb_upper']
-        bb_lower = indicators['bb_lower']
-        
-        # ?? MEJORA 1: Validar que RSI no sea NaN
-        if np.isnan(rsi):
-            return 'hold'
-        
-        # ESTRATEGIA MÁS AGRESIVA Y SELECTIVA
-        buy_conditions = [
-            momentum > self.momentum_threshold,      # Momentum fuerte
-            rsi < 60,                               # ?? MEJORA 2: De 45 a 60 (más flexible, evita RSI alto)
-            macd > macd_signal,                     # Tendencia alcista
-            current_price < bb_lower,               # Precio en zona de soporte
-            volatility < 0.02                       # Mercado estable
-        ]
-        
-        sell_conditions = [
-            momentum < -self.momentum_threshold,     # Momentum bajista
-            rsi > 70,                               # Sobrecomprado
-            macd < macd_signal,                     # Tendencia bajista  
-            current_price > bb_upper,               # Precio en zona de resistencia
-            self.position > 0                       # Solo vender si tenemos posición
-        ]
-        
-        # TOMA DE GANANCIAS MÁS AGRESIVA
-        if self.position > 0:
-            current_profit_pct = (current_price - self.entry_price) / self.entry_price
-            current_loss_pct = (self.entry_price - current_price) / self.entry_price
+        if side == "LONG":
+            stop_loss = entry_price * (1 - stop_percent)
+        else:  # SHORT
+            stop_loss = entry_price * (1 + stop_percent)
             
-            # Tomar ganancias rápido
-            if current_profit_pct >= self.min_profit_target:
-                self.log_message(f"?? TOMANDO GANANCIAS: {current_profit_pct:.3%} (+)", "PROFIT")
-                return 'sell'
-            
-            # Stop loss protector
-            if current_loss_pct >= self.max_loss_stop:
-                self.log_message(f"?? STOP LOSS: {current_loss_pct:.3%} (-)", "LOSS")
-                return 'sell'
-        
-        # SEÑALES PRINCIPALES
-        if sum(buy_conditions) >= 4:  # Necesita 4 de 5 condiciones
-            self.log_message(f"? SEÑAL COMPRA FUERTE: momentum={momentum:.4f}, RSI={rsi:.1f}", "SIGNAL")
-            return 'buy'
-        elif sum(sell_conditions) >= 3:  # Necesita 3 de 5 condiciones
-            self.log_message(f"?? SEÑAL VENTA: momentum={momentum:.4f}, RSI={rsi:.1f}", "SIGNAL")
-            return 'sell'
-        
-        return 'hold'
+        return stop_loss
 
-    def execute_trade(self, action: str, price: float):
-        """Ejecutar operación - OPTIMIZADA PARA MAYORES GANANCIAS"""
-        try:
-            investment_amount = 0
-            quantity = 0
-            quantity_to_sell = 0
-            sale_amount = 0
-            profit_loss = 0
+    def calculate_take_profit(self, entry_price: float, side: str) -> float:
+        """Calcular take profit con ratio riesgo:beneficio 1:1.67"""
+        tp_percent = 0.025  # 2.5%
+        
+        if side == "LONG":
+            take_profit = entry_price * (1 + tp_percent)
+        else:  # SHORT
+            take_profit = entry_price * (1 - tp_percent)
             
-            if action == 'buy':
-                if self.open_positions < self.max_positions:
-                    # Inversión más grande (15% del balance)
-                    investment_amount = self.cash_balance * self.position_size
-                    quantity = investment_amount / price
-                    
-                    if investment_amount > self.cash_balance:
-                        self.log_message("? Fondos insuficientes", "ERROR")
-                        return
-                    
-                    # Actualizar balances
-                    self.cash_balance -= investment_amount
-                    self.position += quantity
-                    self.entry_price = price
-                    self.open_positions += 1
-                    
-                    trade_info = f"? COMPRA: {quantity:.6f} {self.symbol} @ ${price:.2f} | Inversión: ${investment_amount:.2f} | Cash: ${self.cash_balance:.2f}"
-                    self.log_message(trade_info, "TRADE")
-                    
-            elif action == 'sell' and self.position > 0:
-                # Vender toda la posición
-                quantity_to_sell = self.position
-                sale_amount = quantity_to_sell * price
-                profit_loss = sale_amount - (self.position * self.entry_price)
+        return take_profit
+
+    def execute_trade(self, coin: str, signals: dict):
+        """Ejecutar operación de market making"""
+        if coin in self.positions and self.positions[coin]['status'] == 'ACTIVE':
+            return  # Ya hay posición activa
+            
+        # Condiciones para entrar - solo si el spread es atractivo
+        if signals['spread'] > 0.002:  # Spread mínimo de 0.2%
+            # Decidir lado basado en momentum simple
+            market_data = self.get_market_data(coin)
+            if market_data is not None and len(market_data) > 1:
+                current_close = market_data['close'].iloc[-1]
+                previous_close = market_data['close'].iloc[-2]
+                side = "LONG" if current_close > previous_close else "SHORT"
+            else:
+                side = "LONG" if np.random.random() > 0.5 else "SHORT"
+            
+            entry_price = signals['bid_price'] if side == "LONG" else signals['ask_price']
+            size, notional, leverage = self.calculate_position_size(coin, entry_price)
+            
+            # Verificar que tenemos suficiente balance
+            if notional > self.available_balance * 0.1 and notional > 10:  # Mínimo $10
+                stop_loss = self.calculate_stop_loss(entry_price, side)
+                take_profit = self.calculate_take_profit(entry_price, side)
                 
-                # Actualizar balances
-                self.cash_balance += sale_amount
-                self.position = 0
-                self.open_positions = 0
-                self.total_profit += profit_loss
+                self.positions[coin] = {
+                    'side': side,
+                    'entry_price': entry_price,
+                    'size': size,
+                    'notional': notional,
+                    'leverage': leverage,
+                    'stop_loss': stop_loss,
+                    'take_profit': take_profit,
+                    'entry_time': datetime.now().isoformat(),
+                    'status': 'ACTIVE',
+                    'unrealized_pnl': 0.0,
+                    'coin': coin
+                }
                 
-                profit_color = "??" if profit_loss > 0 else "??"
-                trade_info = f"{profit_color} VENTA: {quantity_to_sell:.6f} {self.symbol} @ ${price:.2f} | Monto: ${sale_amount:.2f} | P/L: ${profit_loss:.4f} | Profit Total: ${self.total_profit:.2f}"
-                self.log_message(trade_info, "TRADE")
+                # Reservar margen
+                margin_used = notional / leverage
+                self.available_balance -= margin_used
+                self.save_data()
+                
+                st.success(f"🔄 Nueva posición: {side} {coin} | Precio: ${entry_price:.4f}")
+
+    def update_positions(self):
+        """Actualizar PnL y verificar condiciones de salida con precios reales"""
+        current_pnl = 0
+        positions_to_close = []
+        
+        for coin, position in self.positions.items():
+            if position['status'] == 'ACTIVE':
+                current_price = self.get_real_time_price(coin)
+                
+                # Calcular PnL no realizado
+                if position['side'] == "LONG":
+                    pnl_percent = (current_price - position['entry_price']) / position['entry_price']
+                else:  # SHORT
+                    pnl_percent = (position['entry_price'] - current_price) / position['entry_price']
+                
+                unrealized_pnl = position['notional'] * pnl_percent * position['leverage']
+                position['unrealized_pnl'] = unrealized_pnl
+                position['current_price'] = current_price
+                
+                current_pnl += unrealized_pnl
+                
+                # Verificar stop loss
+                stop_loss_triggered = False
+                if position['side'] == "LONG" and current_price <= position['stop_loss']:
+                    stop_loss_triggered = True
+                    position['exit_reason'] = 'STOP_LOSS'
+                elif position['side'] == "SHORT" and current_price >= position['stop_loss']:
+                    stop_loss_triggered = True
+                    position['exit_reason'] = 'STOP_LOSS'
+                
+                # Verificar take profit
+                take_profit_triggered = False
+                if position['side'] == "LONG" and current_price >= position['take_profit']:
+                    take_profit_triggered = True
+                    position['exit_reason'] = 'TAKE_PROFIT'
+                elif position['side'] == "SHORT" and current_price <= position['take_profit']:
+                    take_profit_triggered = True
+                    position['exit_reason'] = 'TAKE_PROFIT'
+                
+                if stop_loss_triggered or take_profit_triggered:
+                    positions_to_close.append(coin)
+        
+        # Cerrar posiciones que cumplen condiciones
+        for coin in positions_to_close:
+            self.close_position(coin)
             
-            # Registrar posición
-            current_equity = self.cash_balance + (self.position * price)
-            self.positions_history.append({
-                'timestamp': datetime.now(),
-                'action': action,
-                'price': price,
-                'quantity': quantity_to_sell if action == 'sell' else quantity,
-                'investment': investment_amount if action == 'buy' else sale_amount,
-                'cash_balance': self.cash_balance,
-                'position_value': self.position * price,
-                'total_equity': current_equity,
-                'open_positions': self.open_positions,
-                'profit_loss': profit_loss if action == 'sell' else 0
-            })
+        return current_pnl
+
+    def close_position(self, coin: str):
+        """Cerrar posición específica"""
+        if coin in self.positions:
+            position = self.positions[coin]
+            realized_pnl = position['unrealized_pnl']
             
-            self.save_state()
+            # Actualizar estadísticas
+            self.stats['total_trades'] += 1
+            self.stats['total_pnl'] += realized_pnl
             
-        except Exception as e:
-            self.log_message(f"? Error ejecutando trade: {e}", "ERROR")
+            if realized_pnl > 0:
+                self.stats['winning_trades'] += 1
+            else:
+                self.stats['losing_trades'] += 1
+            
+            # Liberar margen + agregar PnL realizado
+            margin_return = position['notional'] / position['leverage']
+            self.available_balance += margin_return + realized_pnl
+            
+            position['status'] = 'CLOSED'
+            position['exit_time'] = datetime.now().isoformat()
+            position['realized_pnl'] = realized_pnl
+            
+            st.info(f"✅ Posición cerrada: {coin} | PnL: ${realized_pnl:.2f}")
+            self.save_data()
 
     def close_all_positions(self):
-        """Cerrar todas las posiciones abiertas"""
-        if self.position > 0:
-            if self.tick_data:
-                tick_data = list(self.tick_data)[-1]
-            else:
-                tick_data = self.get_ticker_price()
-            price = tick_data['ask']
-            self.execute_trade('sell', price)
-            self.log_message("?? TODAS las posiciones cerradas", "INFO")
+        """Cerrar todas las posiciones activas"""
+        active_positions = [coin for coin, pos in self.positions.items() if pos['status'] == 'ACTIVE']
+        for coin in active_positions:
+            self.close_position(coin)
+        return len(active_positions)
 
-    def reset_account(self):
-        """Reiniciar cuenta a estado inicial"""
-        self.cash_balance = 250.0
-        self.position = 0
-        self.entry_price = 0
-        self.positions_history.clear()
-        self.open_positions = 0
-        self.log_messages.clear()
-        self.tick_data.clear()
-        self.total_profit = 0
-        self.log_message("?? Cuenta reiniciada a $250.00", "INFO")
-        self.save_state()
-
-    def trading_cycle(self):
-        """Ciclo principal de trading"""
-        self.log_message("?? Iniciando ciclo de trading HFT ULTRA-RÁPIDO - MÁS OPERACIONES")
-        
-        while self.is_running:
-            try:
-                tick_data = self.get_ticker_price()
-                if tick_data:
-                    self.tick_data.append(tick_data)
-                
-                indicators = self.calculate_indicators()
-                
-                if indicators and len(self.tick_data) >= 10:
-                    signal = self.trading_strategy(indicators)
-                    if signal != 'hold':
-                        price = tick_data['bid'] if signal == 'buy' else tick_data['ask']
-                        self.execute_trade(signal, price)
-                
-                time.sleep(2)
-                
-            except Exception as e:
-                self.log_message(f"? Error en ciclo de trading: {e}", "ERROR")
-                time.sleep(5)
-
-    def start_trading(self):
-        """Iniciar bot de trading"""
-        if not self.is_running:
-            self.is_running = True
-            self.trading_thread = threading.Thread(target=self.trading_cycle, daemon=True)
-            self.trading_thread.start()
-            self.log_message("?? Bot de trading ULTRA-RÁPIDO iniciado - MÁS OPERACIONES")
-
-    def stop_trading(self):
-        """Detener bot de trading"""
-        self.is_running = False
-        self.log_message("?? Bot de trading detenido")
-
-    def get_performance_stats(self):
-        """Obtener estadísticas de performance"""
-        current_price = list(self.tick_data)[-1]['bid'] if self.tick_data else 0
-        position_value = self.position * current_price
-        total_equity = self.cash_balance + position_value
-        total_profit = total_equity - 250.0
-        
-        stats = {
-            'total_trades': len(self.positions_history),
-            'win_rate': 0,
-            'cash_balance': self.cash_balance,
-            'position_value': position_value,
-            'total_equity': total_equity,
-            'open_positions': self.open_positions,
-            'current_price': current_price,
-            'total_profit': total_profit,
-            'position_size': self.position,
-            'realized_profit': self.total_profit
-        }
-        
-        if not self.positions_history:
-            return stats
-        
-        # Calcular win rate
-        sell_trades = [t for t in self.positions_history if t['action'] == 'sell']
-        
-        if sell_trades:
-            profitable_trades = 0
-            for trade in self.positions_history:
-                if trade['action'] == 'sell' and trade.get('profit_loss', 0) > 0:
-                    profitable_trades += 1
-            
-            stats['win_rate'] = (profitable_trades / len(sell_trades)) * 100 if sell_trades else 0
-        
-        return stats
+    def get_api_status(self):
+        """Verificar estado de la API de MEXC"""
+        return self.mexc_api.obtener_estado_servidor()
 
 def main():
-    st.title("?? Bot HFT MEXC - ESTRATEGIA ULTRA-RÁPIDA ??")
-    st.markdown("---")
+    st.title("🤖 HFT Market Maker - MEXC")
+    st.markdown("**Operador Autónomo - Perpetuos USDT con datos reales de MEXC**")
     
-    # Inicializar el bot
+    # Inicializar o recuperar instancia del bot
     if 'bot' not in st.session_state:
-        st.session_state.bot = MexcHighFrequencyTradingBot("", "", "BTCUSDT")
+        st.session_state.bot = MEXCMarketMaker()
     
     bot = st.session_state.bot
     
-    # Sidebar
-    with st.sidebar:
-        st.header("?? Configuración")
-        
-        api_key = st.text_input("API Key MEXC", type="password")
-        secret_key = st.text_input("Secret Key MEXC", type="password")
-        symbol = st.selectbox("Símbolo", ["BTCUSDT", "ETHUSDT", "ADAUSDT", "DOTUSDT", "LINKUSDT"])
-        
-        bot.api_key = api_key
-        bot.secret_key = secret_key
-        bot.symbol = symbol
-        
-        st.markdown("---")
-        st.header("?? Control del Bot")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("?? Iniciar Bot", use_container_width=True):
-                bot.start_trading()
-                st.rerun()
-        
-        with col2:
-            if st.button("?? Detener Bot", use_container_width=True):
-                bot.stop_trading()
-                st.rerun()
-        
-        if st.button("?? Cerrar Todas las Posiciones", use_container_width=True):
-            bot.close_all_positions()
-            st.rerun()
-            
-        if st.button("?? Reiniciar Cuenta", use_container_width=True):
-            bot.reset_account()
-            st.rerun()
-        
-        st.markdown("---")
-        st.header("?? Estadísticas Clave")
-        st.info(f"**Tamaño posición:** {bot.position_size*100}%")
-        st.info(f"**Target ganancia:** {bot.min_profit_target*100}%")
-        st.info(f"**Stop loss:** {bot.max_loss_stop*100}%")
-        st.info(f"**Posiciones máx:** {bot.max_positions}")
-        
-        if bot.is_running:
-            st.success("? Bot Ejecutándose - ESTRATEGIA ULTRA-RÁPIDA")
-        else:
-            st.warning("?? Bot Detenido")
-            
-        if bot.tick_data:
-            latest_tick = list(bot.tick_data)[-1]
-            source = latest_tick.get('source', 'Unknown')
-            st.info(f"**Fuente:** {source}")
-
-    # Layout principal
+    # Verificar estado de API
+    api_status = bot.get_api_status()
+    status_color = "🟢" if api_status else "🔴"
+    st.sidebar.markdown(f"**Estado API MEXC:** {status_color} {'CONECTADO' if api_status else 'DESCONECTADO'}")
+    
+    # Panel de control
     col1, col2, col3, col4 = st.columns(4)
     
-    stats = bot.get_performance_stats()
-    
     with col1:
-        st.metric(
-            label="?? Cash Disponible",
-            value=f"${stats['cash_balance']:.2f}",
-            delta=f"${stats['realized_profit']:.2f}" if stats['realized_profit'] != 0 else None
-        )
-    
+        if st.button("🚀 Encender Bot", type="primary", disabled=bot.active):
+            bot.active = True
+            st.rerun()
+            
     with col2:
-        st.metric(
-            label="?? Precio Actual",
-            value=f"${stats['current_price']:.2f}"
-        )
-    
+        if st.button("🛑 Apagar Bot", disabled=not bot.active):
+            bot.active = False
+            st.rerun()
+            
     with col3:
-        st.metric(
-            label="?? Tasa de Acierto",
-            value=f"{stats['win_rate']:.1f}%"
-        )
+        if st.button("📊 Cerrar Todas", key="close_all"):
+            closed_count = bot.close_all_positions()
+            st.success(f"Cerradas {closed_count} posiciones")
+            st.rerun()
     
     with col4:
-        st.metric(
-            label="?? Total Operaciones",
-            value=f"{stats['total_trades']}"
-        )
+        st.metric("Balance Disponible", f"${bot.available_balance:.2f}")
     
-    # Segunda fila de métricas
-    col5, col6, col7, col8 = st.columns(4)
+    # Mostrar estado del bot
+    status_color = "🟢" if bot.active else "🔴"
+    st.subheader(f"{status_color} Estado del Bot: {'ACTIVO' if bot.active else 'INACTIVO'}")
     
-    with col5:
-        st.metric(
-            label="?? Posiciones Abiertas",
-            value=f"{stats['open_positions']}"
-        )
-    
-    with col6:
-        st.metric(
-            label="?? Tamaño Posición",
-            value=f"{stats['position_size']:.6f}"
-        )
-    
-    with col7:
-        st.metric(
-            label="?? Equity Total",
-            value=f"${stats['total_equity']:.2f}"
-        )
-    
-    with col8:
-        status = "?? LIVE" if bot.is_running else "?? STOP"
-        st.metric(
-            label="?? Estado",
-            value=status
-        )
-    
-    st.markdown("---")
-    
-    # Gráficos y datos
-    tab1, tab2, tab3 = st.tabs(["?? Gráfico de Precios", "?? Historial de Operaciones", "?? Logs del Sistema"])
-    
-    with tab1:
-        if bot.tick_data:
-            prices = [tick['bid'] for tick in list(bot.tick_data)]
-            timestamps = [tick['timestamp'] for tick in list(bot.tick_data)]
+    # Ejecutar lógica del bot si está activo
+    if bot.active:
+        with st.spinner("Ejecutando estrategia de Market Making con datos reales de MEXC..."):
+            # Ejecutar trading para cada moneda
+            for coin in bot.coins.keys():
+                try:
+                    signals = bot.generate_market_signals(coin)
+                    bot.execute_trade(coin, signals)
+                except Exception as e:
+                    st.error(f"Error procesando {coin}: {e}")
             
-            # Asegurarse de que los timestamps sean datetime
-            valid_timestamps = []
-            valid_prices = []
-            for ts, price in zip(timestamps, prices):
-                if isinstance(ts, datetime):
-                    valid_timestamps.append(ts)
-                    valid_prices.append(price)
+            # Actualizar posiciones
+            current_pnl = bot.update_positions()
+        
+        # Mostrar PnL actualizado
+        total_value = bot.available_balance + current_pnl
+        st.metric("PnL Total No Realizado", f"${current_pnl:.2f}", 
+                 delta=f"{((total_value - bot.initial_balance) / bot.initial_balance * 100):.2f}%")
+    
+    # Mostrar panel de posiciones
+    st.subheader("📊 Panel de Posiciones Activas")
+    
+    active_positions = [pos for pos in bot.positions.values() if pos['status'] == 'ACTIVE']
+    
+    if active_positions:
+        positions_data = []
+        for pos in active_positions:
+            current_price = pos.get('current_price', bot.get_real_time_price(pos['coin']))
             
-            if valid_timestamps:
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=valid_timestamps, 
-                    y=valid_prices,
-                    mode='lines',
-                    name=f'Precio {bot.symbol}',
-                    line=dict(color='#00ff88', width=2)
-                ))
-                
-                if len(valid_prices) >= 10:
-                    df = pd.DataFrame({'price': valid_prices})
-                    df['sma_10'] = df['price'].rolling(10).mean()
-                    fig.add_trace(go.Scatter(
-                        x=valid_timestamps[9:],
-                        y=df['sma_10'].dropna(),
-                        mode='lines',
-                        name='SMA 10',
-                        line=dict(color='#ffaa00', width=1, dash='dash')
-                    ))
-                
-                fig.update_layout(
-                    title=f"Precio de {bot.symbol} en Tiempo Real",
-                    xaxis_title="Tiempo",
-                    yaxis_title="Precio (USD)",
-                    template="plotly_dark",
-                    height=400
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
+            # Determinar plan de salida
+            if pos['side'] == "LONG":
+                exit_plan = "STOP_LOSS" if current_price <= pos['stop_loss'] else "TAKE_PROFIT" if current_price >= pos['take_profit'] else "MANTENER"
             else:
-                st.info("No hay datos válidos para graficar")
-        else:
-            st.info("Esperando datos de mercado...")
-    
-    with tab2:
-        if bot.positions_history:
-            # Crear DataFrame seguro
-            display_data = []
-            for pos in bot.positions_history:
-                row = {
-                    'timestamp': pos['timestamp'].strftime('%H:%M:%S') if isinstance(pos['timestamp'], datetime) else str(pos['timestamp']),
-                    'action': pos['action'],
-                    'price': f"${pos['price']:.2f}",
-                    'quantity': f"{pos['quantity']:.6f}",
-                    'cash_balance': f"${pos['cash_balance']:.2f}",
-                    'total_equity': f"${pos['total_equity']:.2f}",
-                    'open_positions': pos['open_positions']
-                }
-                display_data.append(row)
+                exit_plan = "STOP_LOSS" if current_price >= pos['stop_loss'] else "TAKE_PROFIT" if current_price <= pos['take_profit'] else "MANTENER"
             
-            df = pd.DataFrame(display_data)
-            st.dataframe(df, use_container_width=True, height=400)
-        else:
-            st.info("No hay operaciones registradas aún.")
+            positions_data.append({
+                'MONEDA': pos['coin'],
+                'LADO': pos['side'],
+                'APALANCAMIENTO': pos['leverage'],
+                'NOCIONAL': f"${pos['notional']:.2f}",
+                'PRECIO ENTRADA': f"${pos['entry_price']:.4f}",
+                'PRECIO ACTUAL': f"${current_price:.4f}",
+                'STOP LOSS': f"${pos['stop_loss']:.4f}",
+                'TAKE PROFIT': f"${pos['take_profit']:.4f}",
+                'P&L NO REALIZADO': f"${pos['unrealized_pnl']:.2f}",
+                'PLAN DE SALIDA': exit_plan
+            })
+        
+        df = pd.DataFrame(positions_data)
+        st.dataframe(df, use_container_width=True)
+    else:
+        st.info("No hay posiciones activas en este momento")
     
-    with tab3:
-        log_container = st.container(height=400)
-        with log_container:
-            for log_entry in reversed(bot.log_messages[-20:]):
-                if "ERROR" in log_entry:
-                    st.error(log_entry)
-                elif "TRADE" in log_entry:
-                    if "COMPRA" in log_entry:
-                        st.success(log_entry)
-                    elif "VENTA" in log_entry:
-                        if "??" in log_entry:
-                            st.error(log_entry)
-                        else:
-                            st.success(log_entry)
-                    else:
-                        st.info(log_entry)
-                elif "SEÑAL" in log_entry or "PROFIT" in log_entry or "LOSS" in log_entry:
-                    st.warning(log_entry)
-                else:
-                    st.info(log_entry)
+    # Mostrar estadísticas de rendimiento
+    st.subheader("📈 Métricas de Rendimiento")
+    col1, col2, col3, col4 = st.columns(4)
     
-    # Auto-refresh
-    if bot.is_running:
-        time.sleep(5)
-        st.rerun()
+    total_value = bot.available_balance + sum(pos['unrealized_pnl'] for pos in bot.positions.values() if pos['status'] == 'ACTIVE')
+    
+    with col1:
+        st.metric("Valor Total", f"${total_value:.2f}")
+    with col2:
+        st.metric("Rendimiento Total", f"{((total_value - bot.initial_balance) / bot.initial_balance * 100):.2f}%")
+    with col3:
+        win_rate = (bot.stats['winning_trades'] / bot.stats['total_trades'] * 100) if bot.stats['total_trades'] > 0 else 0
+        st.metric("Win Rate", f"{win_rate:.1f}%")
+    with col4:
+        st.metric("Trades Totales", bot.stats['total_trades'])
+    
+    # Historial de trades cerrados
+    st.subheader("📋 Historial de Trades Cerrados")
+    closed_trades = [pos for pos in bot.positions.values() if pos['status'] == 'CLOSED']
+    if closed_trades:
+        closed_data = []
+        for trade in closed_trades[-10:]:  # Últimos 10 trades
+            closed_data.append({
+                'Moneda': trade['coin'],
+                'Lado': trade['side'],
+                'P&L': f"${trade['realized_pnl']:.2f}",
+                'Entrada': f"${trade['entry_price']:.4f}",
+                'Razón Salida': trade.get('exit_reason', 'MANUAL'),
+                'Tiempo': trade.get('entry_time', '')[:16]
+            })
+        st.dataframe(pd.DataFrame(closed_data))
+    else:
+        st.info("No hay trades cerrados aún")
+    
+    # Información de conexión
+    with st.expander("🔧 Información de Conexión y Configuración"):
+        st.write(f"**Balance Inicial:** ${bot.initial_balance}")
+        st.write(f"**Balance Actual:** ${bot.available_balance:.2f}")
+        st.write(f"**Apalancamiento:** {bot.leverage_range[0]}x - {bot.leverage_range[1]}x")
+        st.write(f"**Monedas Operadas:** {', '.join(bot.coins.keys())}")
+        st.write(f"**Símbolos MEXC:** {', '.join(bot.coins.values())}")
+        st.write("**Estrategia:** Market Making con stops dinámicos")
+        st.write("**Persistencia:** Datos guardados automáticamente")
+        st.write(f"**API Status:** {'🟢 CONECTADO' if api_status else '🔴 DESCONECTADO'}")
 
 if __name__ == "__main__":
     main()
