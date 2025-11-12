@@ -12,8 +12,8 @@ import os
 
 # Configurar la página de Streamlit
 st.set_page_config(
-    page_title="?? Bot HFT Futuros MEXC - ESTRATEGIA ULTRA AGRESIVA",
-    page_icon="??",
+    page_title="🤖 Bot HFT Futuros MEXC - ESTRATEGIA ULTRA AGRESIVA",
+    page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -61,7 +61,7 @@ class PersistentStateManager:
                 return True
                 
             except Exception as e:
-                print(f"?? ERROR guardando estado: {e}")
+                print(f"🤖 ERROR guardando estado: {e}")
                 return False
     
     def load_state(self):
@@ -78,7 +78,7 @@ class PersistentStateManager:
                 return self._get_initial_state()
                 
             except Exception as e:
-                print(f"?? ERROR cargando estado: {e}")
+                print(f"🤖 ERROR cargando estado: {e}")
                 return self._get_initial_state()
     
     def _deep_copy_state(self, state):
@@ -125,7 +125,7 @@ class PersistentStateManager:
             'entry_price': 0,
             'positions_history': [],
             'open_positions': 0,
-            'log_messages': ["?? SISTEMA INICIADO - Estado persistente activado"],
+            'log_messages': ["🤖 SISTEMA INICIADO - Estado persistente activado"],
             'tick_data': [],
             'is_running': False,
             'total_profit': 0,
@@ -150,7 +150,7 @@ class MexcFuturesTradingBot:
         
         # Configuración del bot (MANTENER IGUAL)
         self.leverage = 3
-        self.position_size_base = 0.07  # Tamaño base 7% para interés compuesto
+        self.position_size_base = 0.03  # REDUCIDO a 3% base para seguridad
         self.max_positions = 2
         self.momentum_threshold = 0.0012
         self.mean_reversion_threshold = 0.001
@@ -174,13 +174,13 @@ class MexcFuturesTradingBot:
         """Calcula tamaño de posición dinámico basado en crecimiento del capital"""
         current_capital = self.cash_balance + self.total_profit
         
-        # Solo aumenta si hay ganancias consistentes (+5% sobre capital inicial)
-        if current_capital > self.initial_capital * 1.05:
-            growth_factor = min(1.5, current_capital / self.initial_capital)  # Máximo +50%
+        # Solo aumenta si hay ganancias consistentes (+10% sobre capital inicial)
+        if current_capital > self.initial_capital * 1.10:
+            growth_factor = min(1.3, current_capital / self.initial_capital)  # Máximo +30%
             dynamic_size = self.position_size_base * growth_factor
-            return min(dynamic_size, 0.105)  # Máximo 10.5%
+            return min(dynamic_size, 0.05)  # Máximo 5%
         
-        return self.position_size_base  # Tamaño base 7%
+        return self.position_size_base  # Tamaño base 3%
 
     # ========== NUEVA FUNCIÓN: ALTERNAR ENTRE CRIPTOS ==========
     def get_next_symbol(self):
@@ -435,32 +435,35 @@ class MexcFuturesTradingBot:
             
             # TOMA DE GANANCIAS ULTRA RÁPIDA
             if current_profit_pct >= self.min_profit_target:
-                self.log_message(f"?? GANANCIA TURBO: {current_profit_pct:.3%} (+)", "PROFIT")
+                self.log_message(f"💰 GANANCIA TURBO: {current_profit_pct:.3%} (+)", "PROFIT")
                 return 'close'
             
             # STOP LOSS PROTECTOR
             if current_loss_pct >= self.max_loss_stop:
-                self.log_message(f"?? STOP LOSS TURBO: {current_loss_pct:.3%} (-)", "LOSS")
+                self.log_message(f"💸 STOP LOSS TURBO: {current_loss_pct:.3%} (-)", "LOSS")
                 return 'close'
         
         # SEÑALES ULTRA AGRESIVAS - MÁXIMAS OPERACIONES
         if sum(short_conditions) >= 2 and self.open_positions < self.max_positions:
-            self.log_message(f"? SEÑAL SHORT TURBO: momentum={momentum:.4f}, RSI={rsi:.1f}", "SIGNAL")
+            self.log_message(f"📉 SEÑAL SHORT TURBO: momentum={momentum:.4f}, RSI={rsi:.1f}", "SIGNAL")
             return 'sell'
         elif sum(long_conditions) >= 2 and self.open_positions < self.max_positions:
-            self.log_message(f"? SEÑAL LONG TURBO: momentum={momentum:.4f}, RSI={rsi:.1f}", "SIGNAL")
+            self.log_message(f"📈 SEÑAL LONG TURBO: momentum={momentum:.4f}, RSI={rsi:.1f}", "SIGNAL")
             return 'buy'
         
         return 'hold'
 
     def execute_trade(self, action: str, price: float):
-        """Ejecutar operación en FUTUROS - MODO TURBO CON SEGURIDAD"""
+        """Ejecutar operación en FUTUROS - MODO TURBO CON PROTECCIÓN DE CAPITAL"""
         try:
-            # ========== MÍNIMO CAMBIO: VERIFICACIÓN DE SEGURIDAD ==========
+            # ========== MÍNIMO CAMBIO CRÍTICO: VERIFICAR CAPITAL POSITIVO ==========
+            if self.cash_balance <= 10.0:  # Si el capital es menor a $10, NO OPERAR
+                self.log_message("🛑 CAPITAL INSUFICIENTE - No se pueden abrir operaciones", "ERROR")
+                return
+                
+            # ========== MÍNIMO CAMBIO: TAMAÑO MÁS CONSERVADOR ==========
             dynamic_position_size = self.calculate_dynamic_position_size()
-            
-            # LIMITAR tamaño máximo a 5% para seguridad
-            safe_position_size = min(dynamic_position_size, 0.05)
+            safe_position_size = min(dynamic_position_size, 0.03)  # MÁXIMO 3% para seguridad
             
             investment_amount = 0
             quantity = 0
@@ -474,14 +477,14 @@ class MexcFuturesTradingBot:
                 
                 # VERIFICAR que no exceda margen disponible
                 required_margin = investment_amount / self.leverage
-                if required_margin > self.cash_balance * 0.95:  # Dejar 5% de buffer
+                if required_margin > self.cash_balance * 0.8:  # Dejar 20% de buffer
                     self.log_message("❌ MARGEN INSUFICIENTE - Operación cancelada", "ERROR")
                     return
                     
                 quantity = investment_amount / price
                 
                 if investment_amount > self.cash_balance * self.leverage:
-                    self.log_message("? Margen insuficiente", "ERROR")
+                    self.log_message("❌ Margen insuficiente", "ERROR")
                     return
                 
                 # Actualizar balances
@@ -491,7 +494,7 @@ class MexcFuturesTradingBot:
                 self.position_side = 'long' if action == 'buy' else 'short'
                 self.open_positions += 1
                 
-                side_emoji = "??" if action == 'buy' else "??"
+                side_emoji = "🟢" if action == 'buy' else "🔴"
                 trade_info = f"{side_emoji} TURBO {self.position_side.upper()} {self.symbol}: {quantity:.6f} @ ${price:.2f} | Size: {safe_position_size*100:.1f}% | Margen: ${investment_amount/self.leverage:.2f} | Leverage: {self.leverage}x"
                 self.log_message(trade_info, "TRADE")
                 
@@ -513,7 +516,7 @@ class MexcFuturesTradingBot:
                 self.position_side = ''
                 self.total_profit += profit_loss
                 
-                profit_color = "??" if profit_loss > 0 else "??"
+                profit_color = "💰" if profit_loss > 0 else "💸"
                 trade_info = f"{profit_color} CERRAR TURBO {self.symbol}: {quantity_to_close:.6f} @ ${price:.2f} | P/L: ${profit_loss:.4f} | Profit Total: ${self.total_profit:.2f}"
                 self.log_message(trade_info, "TRADE")
             
@@ -534,7 +537,7 @@ class MexcFuturesTradingBot:
             self._auto_save()
             
         except Exception as e:
-            self.log_message(f"?? ERROR ejecutando trade: {e}", "ERROR")
+            self.log_message(f"❌ ERROR ejecutando trade: {e}", "ERROR")
 
     def close_all_positions(self):
         """Cerrar todas las posiciones abiertas"""
@@ -542,7 +545,7 @@ class MexcFuturesTradingBot:
             tick_data = self.get_futures_price()
             price = tick_data['bid'] if self.position_side == 'long' else tick_data['ask']
             self.execute_trade('close', price)
-            self.log_message("?? TODAS las posiciones cerradas - MODO SEGURIDAD", "INFO")
+            self.log_message("🛑 TODAS las posiciones cerradas - MODO SEGURIDAD", "INFO")
         
         # ========== SINCRONIZACIÓN AL CERRAR (AGREGAR) ==========
         force_sync_position_state(self)
@@ -559,12 +562,12 @@ class MexcFuturesTradingBot:
         self._current_tick_data.clear()
         self._state['tick_data'] = []
         self.total_profit = 0
-        self.log_message("?? Cuenta reiniciada a $255.00 - MODO TURBO", "INFO")
+        self.log_message("🔄 Cuenta reiniciada a $255.00 - MODO TURBO", "INFO")
         self._auto_save()
 
     def trading_cycle(self):
         """Ciclo principal de trading HFT ULTRA RÁPIDO"""
-        self.log_message("?? INICIANDO MODO TURBO HFT - PERSISTENCIA ACTIVA")
+        self.log_message("🚀 INICIANDO MODO TURBO HFT - PERSISTENCIA ACTIVA")
         
         consecutive_errors = 0
         max_consecutive_errors = 5
@@ -594,10 +597,10 @@ class MexcFuturesTradingBot:
                 
             except Exception as e:
                 consecutive_errors += 1
-                self.log_message(f"?? ERROR en ciclo #{consecutive_errors}: {e}", "ERROR")
+                self.log_message(f"❌ ERROR en ciclo #{consecutive_errors}: {e}", "ERROR")
                 
                 if consecutive_errors >= max_consecutive_errors:
-                    self.log_message("?? DEMASIADOS ERRORES - Cerrando todas las posiciones", "CRITICAL")
+                    self.log_message("🛑 DEMASIADOS ERRORES - Cerrando todas las posiciones", "CRITICAL")
                     self.close_all_positions()
                     self.is_running = False
                     break
@@ -615,13 +618,13 @@ class MexcFuturesTradingBot:
             self._running = True
             self.trading_thread = threading.Thread(target=self.trading_cycle, daemon=True)
             self.trading_thread.start()
-            self.log_message("? MODO TURBO ACTIVADO - PERSISTENCIA GARANTIZADA", "SYSTEM")
+            self.log_message("✅ MODO TURBO ACTIVADO - PERSISTENCIA GARANTIZADA", "SYSTEM")
 
     def stop_trading(self):
         """Detener bot de trading"""
         self.is_running = False
         self._running = False
-        self.log_message("?? MODO TURBO DETENIDO", "SYSTEM")
+        self.log_message("🛑 MODO TURBO DETENIDO", "SYSTEM")
         # Guardar estado final
         self._auto_save()
         
@@ -681,7 +684,7 @@ class MexcFuturesTradingBot:
 
 # INTERFAZ STREAMLIT (MANTENER IGUAL)
 def main():
-    st.title("?? Bot HFT Futuros MEXC - BTC + ETH + INTERÉS COMPUESTO ?")
+    st.title("🤖 Bot HFT Futuros MEXC - BTC + ETH + INTERÉS COMPUESTO 🚀")
     st.markdown("**CAPITAL INICIAL: $255.00 | APALANCAMIENTO: 3x | BTC + ETH | INTERÉS COMPUESTO ACTIVO**")
     st.markdown("---")
     
@@ -693,7 +696,7 @@ def main():
     
     # Sidebar (igual que antes)
     with st.sidebar:
-        st.header("?? Configuración Turbo")
+        st.header("🎛️ Configuración Turbo")
         
         api_key = st.text_input("API Key MEXC", type="password")
         secret_key = st.text_input("Secret Key MEXC", type="password")
@@ -704,29 +707,29 @@ def main():
         bot.symbol = symbol
         
         st.markdown("---")
-        st.header("?? Control Turbo")
+        st.header("🎮 Control Turbo")
         
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("?? Activar Turbo", use_container_width=True, type="primary"):
+            if st.button("🚀 Activar Turbo", use_container_width=True, type="primary"):
                 bot.start_trading()
                 st.rerun()
         
         with col2:
-            if st.button("?? Desactivar Turbo", use_container_width=True):
+            if st.button("🛑 Desactivar Turbo", use_container_width=True):
                 bot.stop_trading()
                 st.rerun()
         
-        if st.button("?? Cerrar Posiciones", use_container_width=True):
+        if st.button("🔒 Cerrar Posiciones", use_container_width=True):
             bot.close_all_positions()
             st.rerun()
             
-        if st.button("?? Reiniciar $255", use_container_width=True):
+        if st.button("🔄 Reiniciar $255", use_container_width=True):
             bot.reset_account()
             st.rerun()
         
         st.markdown("---")
-        st.header("?? Configuración Turbo")
+        st.header("⚙️ Configuración Turbo")
         st.info(f"**Tamaño posición base:** {bot.position_size_base*100}%")
         st.info(f"**Target ganancia:** {bot.min_profit_target*100}%")
         st.info(f"**Stop loss:** {bot.max_loss_stop*100}%")
@@ -765,26 +768,26 @@ def main():
     
     with col1:
         st.metric(
-            label="?? Margen Disponible",
+            label="💰 Margen Disponible",
             value=f"${stats['cash_balance']:.2f}",
             delta=f"${stats['realized_profit']:.2f}" if stats['realized_profit'] != 0 else None
         )
     
     with col2:
         st.metric(
-            label=f"?? Precio {stats['current_symbol']}",
+            label=f"📈 Precio {stats['current_symbol']}",
             value=f"${stats['current_price']:.2f}"
         )
     
     with col3:
         st.metric(
-            label="?? Tasa Acierto",
+            label="🎯 Tasa Acierto",
             value=f"{stats['win_rate']:.1f}%"
         )
     
     with col4:
         st.metric(
-            label="?? Operaciones",
+            label="📊 Operaciones",
             value=f"{stats['total_trades']}"
         )
     
@@ -794,34 +797,34 @@ def main():
     with col5:
         position_status = f"{stats['position_side'].upper()}" if stats['position_side'] else "SIN POSICIÓN"
         st.metric(
-            label="?? Posición Actual",
+            label="📋 Posición Actual",
             value=position_status
         )
     
     with col6:
         st.metric(
-            label="?? Tamaño Pos",
+            label="⚖️ Tamaño Pos",
             value=f"{stats['position_size']:.6f}"
         )
     
     with col7:
         # ========== NUEVO: MOSTRAR TAMAÑO DINÁMICO ==========
         st.metric(
-            label="?? Size Dinámico",
+            label="📐 Size Dinámico",
             value=f"{stats['dynamic_position_size']:.1f}%"
         )
     
     with col8:
         leverage_info = f"{stats['leverage']}x" if stats['position_side'] else "---"
         st.metric(
-            label="? Apalancamiento",
+            label="🎚️ Apalancamiento",
             value=leverage_info
         )
     
     st.markdown("---")
     
     # Gráficos y datos
-    tab1, tab2, tab3 = st.tabs(["?? Precios Futuros", "?? Operaciones Turbo", "?? Logs del Sistema"])
+    tab1, tab2, tab3 = st.tabs(["📈 Precios Futuros", "📋 Operaciones Turbo", "📜 Logs del Sistema"])
     
     with tab1:
         current_data = list(bot._current_tick_data) if bot._current_tick_data else []
@@ -902,13 +905,13 @@ def main():
                     if "ABRIR" in log_entry:
                         st.success(log_entry)
                     elif "CERRAR" in log_entry:
-                        if "??" in log_entry:
+                        if "💸" in log_entry:
                             st.error(log_entry)
                         else:
                             st.success(log_entry)
                     else:
                         st.info(log_entry)
-                elif "SEÑAL" in log_entry or "PROFIT" in log_entry or "LOSS" in log_entry:
+                elif "SIGNAL" in log_entry or "PROFIT" in log_entry or "LOSS" in log_entry:
                     st.warning(log_entry)
                 elif "SYSTEM" in log_entry:
                     st.info(log_entry)
@@ -922,3 +925,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
