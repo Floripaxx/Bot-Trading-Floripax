@@ -1,210 +1,195 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
 import time
 import requests
-import json
+from datetime import datetime
 
-# Configuración de página
-st.set_page_config(
-    page_title="Bot Trading Mejorado",
-    page_icon="🤖",
-    layout="wide"
-)
+# CONFIGURACIÓN MEJORADA - MÍNIMOS CAMBIOS
+LEVERAGE = 2  # CAMBIO: De 3 a 2 para reducir riesgo
+MAX_DAILY_TRADES = 25  # CAMBIO: Límite de operaciones diarias
+MIN_TIME_BETWEEN_TRADES = 5  # CAMBIO: Segundos entre operaciones
 
-class SafeTradingBot:
-    def __init__(self, initial_capital=255.0):
-        # CONFIGURACIÓN SEGURA - MÍNIMOS CAMBIOS
-        self.leverage = 2  # Reducido de 3x a 2x
-        self.risk_per_trade = 0.01  # 1% riesgo
-        self.stop_loss_pct = 0.015  # 1.5% stop loss
-        self.take_profit_pct = 0.020  # 2.0% take profit
-        
-        # Estado
-        self.cash_balance = initial_capital
-        self.total_equity = initial_capital
+class TradingBot:
+    def __init__(self):
+        self.leverage = LEVERAGE
+        self.cash_balance = 255.0
+        self.total_equity = 255.0
         self.open_positions = []
-        self.trade_history = []
+        self.trade_count = 0
+        self.last_trade_time = None
+        self.daily_trades = 0
+        self.last_daily_reset = datetime.now().date()
         
-        # Stats
-        self.winning_trades = 0
-        self.total_trades = 0
+    def improved_entry_signal(self, current_data, market_conditions):
+        """MEJORA: Filtros básicos para mejores entradas"""
+        # Filtro 1: Tiempo entre operaciones
+        if self.last_trade_time:
+            time_diff = (datetime.now() - self.last_trade_time).total_seconds()
+            if time_diff < MIN_TIME_BETWEEN_TRADES:
+                return False, "Esperando entre operaciones"
         
-    def calculate_safe_position(self, price):
-        """Calcula posición segura"""
-        risk_amount = self.total_equity * self.risk_per_trade
-        position_size = risk_amount / price
-        return min(position_size, (self.total_equity * 0.3) / price)
+        # Filtro 2: Límite diario
+        if self.daily_trades >= MAX_DAILY_TRADES:
+            return False, "Límite diario alcanzado"
+            
+        # Filtro 3: Volatilidad mínima
+        if 'volatility' in market_conditions and market_conditions['volatility'] < 0.003:
+            return False, "Volatilidad muy baja"
+            
+        return True, "Condiciones OK"
     
     def execute_trade(self, action, side, price, quantity):
-        """Ejecuta operación con protección"""
+        """EJECUCIÓN CON MEJORAS MÍNIMAS"""
+        # Verificar límite diario
+        current_date = datetime.now().date()
+        if current_date != self.last_daily_reset:
+            self.daily_trades = 0
+            self.last_daily_reset = current_date
+            
+        if self.daily_trades >= MAX_DAILY_TRADES:
+            return False, "Límite diario excedido"
+        
+        # Ejecutar normalmente (mantener tu lógica original)
         cost = quantity * price / self.leverage
         
         if cost > self.cash_balance:
             return False, "Fondos insuficientes"
             
-        # Crear trade
         trade = {
             'timestamp': datetime.now(),
             'action': action,
             'side': side,
             'leverage': self.leverage,
             'price': price,
-            'quantity': quantity,
-            'stop_loss': price * (1 - self.stop_loss_pct) if side == 'long' else price * (1 + self.stop_loss_pct),
-            'take_profit': price * (1 + self.take_profit_pct) if side == 'long' else price * (1 - self.take_profit_pct)
+            'quantity': quantity
         }
         
         self.open_positions.append(trade)
         self.cash_balance -= cost
-        self.total_trades += 1
+        self.trade_count += 1
+        self.daily_trades += 1
+        self.last_trade_time = datetime.now()
         
         return True, "Operación exitosa"
     
-    def check_stop_loss_take_profit(self, current_price):
-        """Verifica condiciones de salida"""
-        closed_positions = []
+    def calculate_safe_quantity(self, price, risk_percent=0.01):
+        """MEJORA: Cálculo de cantidad más seguro"""
+        risk_amount = self.total_equity * risk_percent
+        base_quantity = risk_amount / price
         
-        for pos in self.open_positions[:]:
-            if (pos['side'] == 'long' and current_price <= pos['stop_loss']) or \
-               (pos['side'] == 'short' and current_price >= pos['stop_loss']):
-                # Stop loss hit
-                pnl = self.calculate_pnl(pos, current_price)
-                closed_positions.append(('STOP_LOSS', pos, pnl))
-                self.open_positions.remove(pos)
-                
-            elif (pos['side'] == 'long' and current_price >= pos['take_profit']) or \
-                 (pos['side'] == 'short' and current_price <= pos['take_profit']):
-                # Take profit hit
-                pnl = self.calculate_pnl(pos, current_price)
-                closed_positions.append(('TAKE_PROFIT', pos, pnl))
-                self.open_positions.remove(pos)
-                
-        return closed_positions
+        # Limitar a máximo 20% del capital
+        max_quantity = (self.total_equity * 0.2) / price
+        return min(base_quantity, max_quantity)
     
-    def calculate_pnl(self, position, close_price):
-        """Calcula P&L"""
+    def close_position(self, position, close_price):
+        """MANTENER tu lógica original de cierre"""
         if position['side'] == 'long':
             pnl = (close_price - position['price']) * position['quantity'] * position['leverage']
         else:
             pnl = (position['price'] - close_price) * position['quantity'] * position['leverage']
             
-        # Actualizar balance
         initial_cost = position['quantity'] * position['price'] / position['leverage']
         self.cash_balance += initial_cost + pnl
         self.total_equity = self.cash_balance
         
-        if pnl > 0:
-            self.winning_trades += 1
-            
+        self.open_positions.remove(position)
         return pnl
-    
-    def get_stats(self):
-        """Obtiene estadísticas"""
-        win_rate = (self.winning_trades / self.total_trades * 100) if self.total_trades > 0 else 0
-        return {
-            'win_rate': win_rate,
-            'total_trades': self.total_trades,
-            'equity': self.total_equity,
-            'open_positions': len(self.open_positions)
-        }
 
 def main():
-    st.title("🤖 Bot Trading Mejorado - MEXC")
+    st.title("🤖 Bot Trading - MEXC")
     
-    # Inicializar bot en session state
+    # Inicializar bot
     if 'bot' not in st.session_state:
-        st.session_state.bot = SafeTradingBot(initial_capital=255.0)
+        st.session_state.bot = TradingBot()
         st.session_state.running = False
-        st.session_state.last_update = datetime.now()
     
-    # Sidebar - Controles
+    # Sidebar
     with st.sidebar:
-        st.header("🎛 Controles")
+        st.header("Controles")
         
-        if st.button("▶️ Iniciar Bot" if not st.session_state.running else "⏸️ Detener Bot"):
+        if st.button("Iniciar Bot" if not st.session_state.running else "Detener Bot"):
             st.session_state.running = not st.session_state.running
             
         st.divider()
-        
-        # Configuración
-        st.subheader("⚙️ Configuración")
-        leverage = st.selectbox("Apalancamiento", [1, 2, 3], index=1)
-        risk = st.slider("Riesgo por Operación (%)", 0.5, 5.0, 1.0)
-        
-        # Actualizar configuración
-        st.session_state.bot.leverage = leverage
-        st.session_state.bot.risk_per_trade = risk / 100
+        st.subheader("Configuración Mejorada")
+        st.write(f"Apalancamiento: {LEVERAGE}x")
+        st.write(f"Límite diario: {MAX_DAILY_TRADES} operaciones")
+        st.write(f"Tiempo entre trades: {MIN_TIME_BETWEEN_TRADES}s")
     
     # Panel principal
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
+    
+    bot = st.session_state.bot
     
     with col1:
-        st.metric(
-            "💰 Capital Actual", 
-            f"${st.session_state.bot.total_equity:.2f}",
-            delta=f"${st.session_state.bot.total_equity - 255.0:.2f}" if st.session_state.bot.total_equity != 255.0 else None
-        )
+        st.metric("💰 Capital", f"${bot.total_equity:.2f}")
     
     with col2:
-        stats = st.session_state.bot.get_stats()
-        st.metric("🎯 Tasa de Acierto", f"{stats['win_rate']:.1f}%")
+        st.metric("📊 Operaciones Hoy", bot.daily_trades)
     
     with col3:
-        st.metric("📊 Operaciones Totales", stats['total_trades'])
+        st.metric("🎯 Apalancamiento", f"{bot.leverage}x")
+    
+    with col4:
+        st.metric("📈 Posiciones Abiertas", len(bot.open_positions))
     
     # Simulación de trading
     if st.session_state.running:
-        st.info("🟢 Bot ejecutándose...")
+        st.success("✅ Bot ejecutándose con configuración mejorada")
         
-        # Simular datos de mercado (reemplazar con API real)
-        current_price = 3448.07 + np.random.normal(0, 10)
+        # Simular datos de mercado (MANTENER tu lógica original)
+        current_price = 3448.07 + np.random.normal(0, 8)
         
-        # Verificar condiciones de salida
-        closed_positions = st.session_state.bot.check_stop_loss_take_profit(current_price)
+        # MEJORA: Usar estrategia mejorada
+        market_conditions = {
+            'volatility': np.random.uniform(0.002, 0.01),
+            'trend': 'neutral'
+        }
         
-        for reason, pos, pnl in closed_positions:
-            st.warning(f"🔒 {reason}: P&L ${pnl:.4f}")
+        can_trade, reason = bot.improved_entry_signal(None, market_conditions)
         
-        # Simular señal de trading (reemplazar con lógica real)
-        if np.random.random() > 0.7:  # 30% probabilidad de señal
-            position_size = st.session_state.bot.calculate_safe_position(current_price)
-            success, msg = st.session_state.bot.execute_trade(
+        if can_trade and np.random.random() > 0.6:  # 40% probabilidad
+            quantity = bot.calculate_safe_quantity(current_price)
+            
+            success, message = bot.execute_trade(
                 action='sell',
-                side='short',
+                side='short', 
                 price=current_price,
-                quantity=position_size
+                quantity=quantity
             )
             
             if success:
-                st.success(f"✅ {msg} - Precio: ${current_price:.2f}")
+                st.info(f"📈 Nueva operación: {quantity:.6f} BTC @ ${current_price:.2f}")
+            else:
+                st.warning(f"❌ {message}")
+        elif not can_trade:
+            st.write(f"⏳ {reason}")
         
-        # Actualizar cada 2 segundos
-        time.sleep(2)
+        # Cerrar posiciones (MANTENER tu lógica original)
+        if bot.open_positions and np.random.random() > 0.7:
+            position = bot.open_positions[0]
+            pnl = bot.close_position(position, current_price)
+            color = "green" if pnl > 0 else "red"
+            st.markdown(f"<span style='color:{color}'>🔒 Posición cerrada: ${pnl:.4f}</span>", unsafe_allow_html=True)
+        
+        # Actualizar cada 3 segundos
+        time.sleep(3)
         st.rerun()
-    else:
-        st.warning("⏸️ Bot detenido")
     
-    # Mostrar posiciones abiertas
-    if st.session_state.bot.open_positions:
-        st.subheader("📈 Posiciones Abiertas")
-        positions_df = pd.DataFrame(st.session_state.bot.open_positions)
-        st.dataframe(positions_df[['timestamp', 'side', 'price', 'quantity', 'stop_loss', 'take_profit']])
+    # Mostrar posiciones
+    if bot.open_positions:
+        st.subheader("Posiciones Abiertas")
+        for pos in bot.open_positions:
+            st.write(f"- {pos['side']} {pos['quantity']:.6f} @ ${pos['price']:.2f}")
     
-    # Mostrar estadísticas detalladas
+    # Estadísticas
     with st.expander("📊 Estadísticas Detalladas"):
-        stats = st.session_state.bot.get_stats()
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("Apalancamiento", f"{st.session_state.bot.leverage}x")
-        with col2:
-            st.metric("Stop Loss", f"{st.session_state.bot.stop_loss_pct*100:.1f}%")
-        with col3:
-            st.metric("Take Profit", f"{st.session_state.bot.take_profit_pct*100:.1f}%")
-        with col4:
-            st.metric("Posiciones Abiertas", stats['open_positions'])
+        st.write(f"Capital inicial: $255.00")
+        st.write(f"Capital actual: ${bot.total_equity:.2f}")
+        st.write(f"Rendimiento: {((bot.total_equity - 255) / 255 * 100):.2f}%")
+        st.write(f"Operaciones totales: {bot.trade_count}")
+        st.write(f"Operaciones hoy: {bot.daily_trades}/{MAX_DAILY_TRADES}")
 
 if __name__ == "__main__":
     main()
