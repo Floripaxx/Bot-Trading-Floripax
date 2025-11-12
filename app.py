@@ -139,10 +139,26 @@ class MexcFuturesTradingBot:
         self.symbol = symbol
         self.base_url = 'https://api.mexc.com'
         
-        # ========== NUEVO: CONFIGURACIÓN MULTI-CRIPTO + INTERÉS COMPUESTO ==========
-        self.symbols_to_trade = ["BTCUSDT", "ETHUSDT"]  # BTC + ETH
+        # ========== NUEVO: ESTADO SEPARADO POR CRIPTO ==========
+        self.symbols_to_trade = ["BTCUSDT", "ETHUSDT"]
         self.current_symbol_index = 0
         self.initial_capital = 255.0
+        
+        # ESTADO POR SÍMBOLO
+        self.symbol_states = {
+            'BTCUSDT': {
+                'position': 0,
+                'position_side': '',
+                'entry_price': 0,
+                'open_positions': 0
+            },
+            'ETHUSDT': {
+                'position': 0,
+                'position_side': '',
+                'entry_price': 0,
+                'open_positions': 0
+            }
+        }
         
         # SISTEMA DE PERSISTENCIA SIMPLIFICADO
         self.persistence = PersistentStateManager()
@@ -150,7 +166,7 @@ class MexcFuturesTradingBot:
         
         # Configuración del bot (MANTENER IGUAL)
         self.leverage = 3
-        self.position_size_base = 0.03  # REDUCIDO a 3% base para seguridad
+        self.position_size_base = 0.03
         self.max_positions = 2
         self.momentum_threshold = 0.0012
         self.mean_reversion_threshold = 0.001
@@ -169,20 +185,55 @@ class MexcFuturesTradingBot:
         # ========== SINCRONIZACIÓN INICIAL (AGREGAR) ==========
         force_sync_position_state(self)
     
-    # ========== NUEVA FUNCIÓN: INTERÉS COMPUESTO AUTOMÁTICO ==========
+    # ========== NUEVAS PROPIEDADES POR SÍMBOLO ==========
+    @property
+    def position(self):
+        return self.symbol_states[self.symbol]['position']
+    
+    @position.setter
+    def position(self, value):
+        self.symbol_states[self.symbol]['position'] = value
+        self._auto_save()
+    
+    @property
+    def position_side(self):
+        return self.symbol_states[self.symbol]['position_side']
+    
+    @position_side.setter
+    def position_side(self, value):
+        self.symbol_states[self.symbol]['position_side'] = value
+        self._auto_save()
+    
+    @property
+    def entry_price(self):
+        return self.symbol_states[self.symbol]['entry_price']
+    
+    @entry_price.setter
+    def entry_price(self, value):
+        self.symbol_states[self.symbol]['entry_price'] = value
+        self._auto_save()
+    
+    @property
+    def open_positions(self):
+        return self.symbol_states[self.symbol]['open_positions']
+    
+    @open_positions.setter
+    def open_positions(self, value):
+        self.symbol_states[self.symbol]['open_positions'] = value
+        self._auto_save()
+
+    # ========== INTERÉS COMPUESTO AUTOMÁTICO ==========
     def calculate_dynamic_position_size(self):
         """Calcula tamaño de posición dinámico basado en crecimiento del capital"""
         current_capital = self.cash_balance + self.total_profit
         
-        # Solo aumenta si hay ganancias consistentes (+10% sobre capital inicial)
         if current_capital > self.initial_capital * 1.10:
-            growth_factor = min(1.3, current_capital / self.initial_capital)  # Máximo +30%
+            growth_factor = min(1.3, current_capital / self.initial_capital)
             dynamic_size = self.position_size_base * growth_factor
-            return min(dynamic_size, 0.05)  # Máximo 5%
+            return min(dynamic_size, 0.05)
         
-        return self.position_size_base  # Tamaño base 3%
+        return self.position_size_base
 
-    # ========== NUEVA FUNCIÓN: ALTERNAR ENTRE CRIPTOS ==========
     def get_next_symbol(self):
         """Alterna entre BTC y ETH para diversificación"""
         self.current_symbol_index = (self.current_symbol_index + 1) % len(self.symbols_to_trade)
@@ -191,9 +242,7 @@ class MexcFuturesTradingBot:
     def _auto_save(self):
         """Guardado automático simple"""
         try:
-            # Actualizar tick_data antes de guardar
             self._state['tick_data'] = list(self._current_tick_data)
-            # Guardar en hilo separado
             threading.Thread(
                 target=self.persistence.save_state, 
                 args=(self._state,),
@@ -213,44 +262,8 @@ class MexcFuturesTradingBot:
         self._auto_save()
     
     @property
-    def position(self):
-        return self._state['position']
-    
-    @position.setter
-    def position(self, value):
-        self._state['position'] = value
-        self._auto_save()
-    
-    @property
-    def position_side(self):
-        return self._state['position_side']
-    
-    @position_side.setter
-    def position_side(self, value):
-        self._state['position_side'] = value
-        self._auto_save()
-    
-    @property
-    def entry_price(self):
-        return self._state['entry_price']
-    
-    @entry_price.setter
-    def entry_price(self, value):
-        self._state['entry_price'] = value
-        self._auto_save()
-    
-    @property
     def positions_history(self):
         return self._state['positions_history']
-    
-    @property
-    def open_positions(self):
-        return self._state['open_positions']
-    
-    @open_positions.setter
-    def open_positions(self, value):
-        self._state['open_positions'] = value
-        self._auto_save()
     
     @property
     def log_messages(self):
@@ -489,7 +502,7 @@ class MexcFuturesTradingBot:
                 
                 # Actualizar balances
                 self.cash_balance -= (investment_amount / self.leverage)
-                self.position = quantity  # CORRECCIÓN: Usar quantity directamente, no acumular
+                self.position = quantity
                 self.entry_price = price
                 self.position_side = 'long' if action == 'buy' else 'short'
                 self.open_positions = 1
@@ -541,23 +554,29 @@ class MexcFuturesTradingBot:
 
     def close_all_positions(self):
         """Cerrar todas las posiciones abiertas"""
-        if self.position > 0:
-            tick_data = self.get_futures_price()
-            price = tick_data['bid'] if self.position_side == 'long' else tick_data['ask']
-            self.execute_trade('close', price)
-            self.log_message("🛑 TODAS las posiciones cerradas - MODO SEGURIDAD", "INFO")
+        # Cerrar posiciones en TODOS los símbolos
+        for symbol in self.symbols_to_trade:
+            self.symbol = symbol
+            if self.position > 0:
+                tick_data = self.get_futures_price()
+                price = tick_data['bid'] if self.position_side == 'long' else tick_data['ask']
+                self.execute_trade('close', price)
         
-        # ========== SINCRONIZACIÓN AL CERRAR (AGREGAR) ==========
+        self.log_message("🛑 TODAS las posiciones cerradas - MODO SEGURIDAD", "INFO")
         force_sync_position_state(self)
 
     def reset_account(self):
         """Reiniciar cuenta a estado inicial"""
         self.cash_balance = 255.0
-        self.position = 0
-        self.position_side = ''
-        self.entry_price = 0
+        # Resetear todos los estados de símbolos
+        for symbol in self.symbols_to_trade:
+            self.symbol_states[symbol] = {
+                'position': 0,
+                'position_side': '',
+                'entry_price': 0,
+                'open_positions': 0
+            }
         self.positions_history.clear()
-        self.open_positions = 0
         self.log_messages.clear()
         self._current_tick_data.clear()
         self._state['tick_data'] = []
@@ -574,7 +593,7 @@ class MexcFuturesTradingBot:
         
         while self.is_running:
             try:
-                # ========== NUEVO: ALTERNAR ENTRE BTC Y ETH ==========
+                # ========== ALTERNAR ENTRE BTC Y ETH ==========
                 self.symbol = self.get_next_symbol()
                 
                 tick_data = self.get_futures_price()
@@ -611,9 +630,7 @@ class MexcFuturesTradingBot:
     def start_trading(self):
         """Iniciar bot de trading HFT"""
         if not self.is_running:
-            # ========== SINCRONIZACIÓN AL INICIAR (AGREGAR) ==========
             force_sync_position_state(self)
-            
             self.is_running = True
             self._running = True
             self.trading_thread = threading.Thread(target=self.trading_cycle, daemon=True)
@@ -625,10 +642,7 @@ class MexcFuturesTradingBot:
         self.is_running = False
         self._running = False
         self.log_message("🛑 MODO TURBO DETENIDO", "SYSTEM")
-        # Guardar estado final
         self._auto_save()
-        
-        # ========== SINCRONIZACIÓN AL DETENER (AGREGAR) ==========
         force_sync_position_state(self)
 
     def get_performance_stats(self):
@@ -651,7 +665,6 @@ class MexcFuturesTradingBot:
         
         total_profit = total_equity - 255.0
         
-        # ========== NUEVO: CALCULAR TAMAÑO DINÁMICO ACTUAL ==========
         current_dynamic_size = self.calculate_dynamic_position_size()
         
         stats = {
@@ -667,15 +680,13 @@ class MexcFuturesTradingBot:
             'realized_profit': self.total_profit,
             'leverage': self.leverage,
             'current_symbol': self.symbol,
-            'dynamic_position_size': current_dynamic_size * 100  # En porcentaje
+            'dynamic_position_size': current_dynamic_size * 100
         }
         
         if not self.positions_history:
             return stats
         
-        # Calcular win rate
         close_trades = [t for t in self.positions_history if t['action'] == 'close']
-        
         if close_trades:
             profitable_trades = len([t for t in close_trades if t.get('profit_loss', 0) > 0])
             stats['win_rate'] = (profitable_trades / len(close_trades)) * 100 if close_trades else 0
@@ -688,13 +699,11 @@ def main():
     st.markdown("**CAPITAL INICIAL: $255.00 | APALANCAMIENTO: 3x | BTC + ETH | INTERÉS COMPUESTO ACTIVO**")
     st.markdown("---")
     
-    # Inicializar el bot
     if 'bot' not in st.session_state:
         st.session_state.bot = MexcFuturesTradingBot("", "", "BTCUSDT")
     
     bot = st.session_state.bot
     
-    # Sidebar (igual que antes)
     with st.sidebar:
         st.header("🎛️ Configuración Turbo")
         
@@ -735,11 +744,8 @@ def main():
         st.info(f"**Stop loss:** {bot.max_loss_stop*100}%")
         st.info(f"**Apalancamiento:** {bot.leverage}x")
         st.info(f"**Operaciones máx:** {bot.max_positions}")
-        
-        # ========== NUEVO: MOSTRAR CRIPTOS ACTIVAS ==========
         st.info(f"**Criptos activas:** {', '.join(bot.symbols_to_trade)}")
         
-        # ========== INDICADOR VISUAL MÍNIMO (AGREGAR) ==========
         st.markdown("---")
         if bot.is_running:
             st.markdown("""
@@ -761,7 +767,7 @@ def main():
             source = latest_tick.get('source', 'Unknown')
             st.info(f"**Fuente:** {source}")
 
-    # Layout principal (igual que antes)
+    # Layout principal
     col1, col2, col3, col4 = st.columns(4)
     
     stats = bot.get_performance_stats()
@@ -791,7 +797,6 @@ def main():
             value=f"{stats['total_trades']}"
         )
     
-    # Segunda fila de métricas
     col5, col6, col7, col8 = st.columns(4)
     
     with col5:
@@ -808,7 +813,6 @@ def main():
         )
     
     with col7:
-        # ========== NUEVO: MOSTRAR TAMAÑO DINÁMICO ==========
         st.metric(
             label="📐 Size Dinámico",
             value=f"{stats['dynamic_position_size']:.1f}%"
@@ -823,7 +827,6 @@ def main():
     
     st.markdown("---")
     
-    # Gráficos y datos
     tab1, tab2, tab3 = st.tabs(["📈 Precios Futuros", "📋 Operaciones Turbo", "📜 Logs del Sistema"])
     
     with tab1:
@@ -849,7 +852,6 @@ def main():
                     line=dict(color='#00ff88', width=2)
                 ))
                 
-                # Mostrar posición actual si existe
                 if bot.position > 0 and bot.entry_price > 0:
                     fig.add_hline(
                         y=bot.entry_price, 
@@ -874,7 +876,6 @@ def main():
     
     with tab2:
         if bot.positions_history:
-            # Crear DataFrame para futuros
             display_data = []
             for pos in bot.positions_history:
                 row = {
@@ -918,7 +919,6 @@ def main():
                 else:
                     st.info(log_entry)
     
-    # Auto-refresh
     if bot.is_running:
         time.sleep(2)
         st.rerun()
