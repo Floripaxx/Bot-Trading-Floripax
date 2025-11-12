@@ -109,6 +109,22 @@ class TradingBot:
         self.add_log(log_msg, "CLOSE")
         return pnl
     
+    def check_positions_for_close(self, current_price):
+        """VERIFICA POSICIONES PARA CERRAR"""
+        positions_to_close = []
+        
+        for position in self.open_positions:
+            if position['side'] == 'long':
+                pnl = (current_price - position['price']) * position['quantity'] * self.leverage
+            else:
+                pnl = (position['price'] - current_price) * position['quantity'] * self.leverage
+            
+            # Cierre rápido: 0.4% de ganancia/pérdida
+            if abs(pnl) > position['quantity'] * position['price'] * 0.004:
+                positions_to_close.append(position)
+        
+        return positions_to_close
+    
     def get_signal(self):
         """GENERA SEÑAL"""
         current_time = datetime.now()
@@ -166,17 +182,20 @@ def main():
     logs_container = st.container()
     
     with logs_container:
-        for log in reversed(bot.trade_logs[-15:]):
-            time_str = log['timestamp'].strftime("%H:%M:%S")
-            if log['type'] == "TRADE":
-                st.success(f"🕒 {time_str} | {log['message']}")
-            elif log['type'] == "CLOSE":
-                if "GANANCIA" in log['message']:
+        if bot.trade_logs:
+            for log in reversed(bot.trade_logs[-15:]):
+                time_str = log['timestamp'].strftime("%H:%M:%S")
+                if log['type'] == "TRADE":
                     st.success(f"🕒 {time_str} | {log['message']}")
+                elif log['type'] == "CLOSE":
+                    if "GANANCIA" in log['message']:
+                        st.success(f"🕒 {time_str} | {log['message']}")
+                    else:
+                        st.error(f"🕒 {time_str} | {log['message']}")
                 else:
-                    st.error(f"🕒 {time_str} | {log['message']}")
-            else:
-                st.info(f"🕒 {time_str} | {log['message']}")
+                    st.info(f"🕒 {time_str} | {log['message']}")
+        else:
+            st.info("No hay logs aún...")
     
     # Ejecución del bot
     if st.session_state.running:
@@ -201,18 +220,11 @@ def main():
             if not success:
                 bot.add_log(f"⚠️ {message}")
         
-        # Cerrar posiciones
-        if bot.open_positions:
-            for position in bot.open_positions[:]:
-                if position['side'] == 'long':
-                    pnl = (btc_price - position['price']) * position['quantity'] * self.leverage
-                else:
-                    pnl = (position['price'] - btc_price) * position['quantity'] * self.leverage
-                
-                # Cierre rápido
-                if abs(pnl) > position['quantity'] * position['price'] * 0.004:
-                    bot.close_position(position, btc_price)
-                    break
+        # Verificar y cerrar posiciones
+        positions_to_close = bot.check_positions_for_close(btc_price)
+        for position in positions_to_close:
+            if position in bot.open_positions:  # Verificar que aún existe
+                bot.close_position(position, btc_price)
         
         time.sleep(2)
         st.rerun()
@@ -222,6 +234,8 @@ def main():
         st.subheader("📊 Posiciones Abiertas")
         for pos in bot.open_positions:
             st.write(f"- {pos['side'].upper()} {pos['quantity']:.6f} BTC @ ${pos['price']:.2f}")
+    else:
+        st.info("No hay posiciones abiertas")
     
     # Estadísticas
     with st.expander("📈 Estadísticas Detalladas"):
@@ -233,7 +247,7 @@ def main():
         with col2:
             st.write(f"**Operaciones totales:** {bot.trade_count}")
             st.write(f"**Factor compound:** {bot.compound_growth:.4f}")
-            st.write(f"**Eficiencia:** {(bot.daily_trades / MAX_DAILY_TRADES * 100):.1f}%")
+            st.write(f"**Eficiencia:** {(bot.daily_trades / MAX_DAILY_TRADES * 100):.1f}%" if MAX_DAILY_TRADES > 0 else "0%")
 
 if __name__ == "__main__":
     main()
